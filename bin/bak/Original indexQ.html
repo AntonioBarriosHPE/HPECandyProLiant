@@ -1,0 +1,787 @@
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta name="description" content="">
+    <title>HPE EL300 Candy Demo</title>
+	<link rel="icon" type="image/png" href="img/favicon.ico">
+
+    <!-- Bootstrap core CSS -->
+<script src="js/jquery-3.3.1.min.js"></script>
+<script src="js/bootstrap.js"></script>		
+<link href="css/bootstrap.min.css" rel="stylesheet">
+<link href="css/all.css" rel="stylesheet">
+<link href="css/jumbotron.css" rel="stylesheet">
+<link href="css/fonts.css" rel="stylesheet">
+
+    <style>
+
+html *
+{
+	font-family: Metric-Light;
+}
+
+	#videoElement {
+	width: 500px;
+	height: 375px;
+	background-color: #666;
+}
+	
+      .bd-placeholder-img {
+        font-size: 1.125rem;
+        text-anchor: middle;
+        -webkit-user-select: none;
+        -moz-user-select: none;
+        -ms-user-select: none;
+        user-select: none;
+      }
+
+      @media (min-width: 768px) {
+        .bd-placeholder-img-lg {
+          font-size: 3.5rem;
+        }
+      }
+	  
+	  html,body{
+    height: 100%
+}
+
+h2 {
+	font-family: 'Metric-Medium';
+}
+h5 {
+	font-family: 'Metric-Light';
+}
+.titlefont {
+	font-family: 'Metric-Semibold';
+	font-size: 200%;
+}
+
+    </style>
+    <!-- Custom styles for this template -->
+
+	
+
+
+<script type="text/JavaScript">
+
+
+var debug = false;
+
+// Set just one of these two to true if you want to override
+var default_to_cpu = false;  
+var default_to_vpu = false;
+
+
+
+var host = window.location.hostname;
+
+var title = "HPE EL300 Candy Demo - Powered by Intel® OpenVINO®";
+
+
+var emotion_threshold = 5;
+var em_buffer_size = 5;
+var emotion_count = 0; 
+var temp_emotion = null;
+var em_arr = [];
+var em_pnt = 0;
+
+var emotion = null;
+var wasHappy = false;
+var candyGiven = false;
+var happyStart;
+var currentTime;
+var duration;
+var candyDurationRequirement = 3000;  // milliseconds
+var countdownTime = 0;
+var happyPerson = "";
+var happyTime = 0;
+var happyCount = 0;
+
+var dur1 = 0;
+var dur2 = 0;
+var dur3 = 0;
+var dur4 = 0;
+var prevFrame = "";
+var currentFrame = "";
+var loading = false;
+var idleFrameMax = 5; 
+var idleFrameCount = 0;
+var anonymousUser = "data:image/png;base64,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"
+var happy1 = anonymousUser;
+var happy2 = anonymousUser;
+var happy3 = anonymousUser;
+var happy4 = anonymousUser;
+
+var restartvpu = false;
+var running = false;
+
+var ws;  // This is the main candy_demo websocket pipe for data
+var wsdemo;  // This is the initialzing pipe to python that lets you start different types of traffic
+
+
+datastring = "This demo shows HPE's EL300 Converged Edge System,    " +
+		"which combines both compute and data acquition/control into a single box. <br><br>" +
+		"The demo utilizes the Intel® OpenVINO® framework to run inference on a variety of different types of hardware including CPUs, GPUs, FPGAs, and VPUs.  " +
+		"Using HPE's VPU (Vision Processing Unit) Module allows for high performance, low power inference at the edge.   " +
+		"Different inference models can be run on the right hardware between the multiple VPU chips, the CPU, and GPU built into this system. <br><br>" +
+		"The metadata or output from the inference is then used to control the DIO (digital input/output) in the same EL300 box.    " + 
+		"The DIO is used to interface directly with other machines, in this instance a candy dispenser.  "
+
+
+
+function init() {
+
+	$("#titlestring").text(title);
+
+	var imgdata = "data:image/jpeg;base64,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";
+	$("#frame").append('<img src=' + imgdata + '>');
+	$("#recent1").attr("src",happy1);
+	$("#recent2").attr("src",happy2);
+	$("#recent3").attr("src",happy3);
+	$("#dur1").html(dur1 + " seconds");
+	$("#dur2").html(dur2 + " seconds");
+	$("#dur3").html(dur3 + " seconds");	
+	
+	$("#winner").attr("src",anonymousUser);
+	$("#wintime").html(0/1000 + " seconds");
+
+	$('#targetModal').modal('hide');
+	startIE();		
+
+	
+}
+
+function startIE() {
+
+	if (running == true) {  
+		// already running so need to kill italic
+		console.log("running = true");
+		ws.close();
+		
+		// clean up icons/web ui
+	}
+	
+	else {
+
+		ws = new WebSocket('ws://' + host + ':8080/');
+		ws.onopen = function() {
+		  console.log("websocket opened");
+		  loading = true;
+		  restart_vpu = false;
+		  send_settings();
+		};
+		ws.onclose = function() {
+		  console.log("websocket closed");
+		  if (restartvpu) {
+			$("#videotag").html("VPU/System needs restarted");
+			$("#frame").attr("src","img/sad_face.jpg");
+		  }
+		  else {
+			$("#videotag").html("Not running (try to press F5)");
+			$("#frame").attr("src","img/sad_face.jpg");
+		  }
+		  
+		};
+		ws.onmessage = function(event) {
+
+		    if (event.data.indexOf("FRAME:") == 0) {
+				if (loading) {
+					$("#videotag").html("Live Video");
+					loading = false;
+				}
+				// This is an image/jpeg
+				prevFrame = currentFrame;
+				currentFrame = "data:image/jpeg;chartset=utf-8;base64," + event.data.substring(6, event.data.length);
+				$("#frame").attr("src",currentFrame);
+				idleFrameCount++; 
+				if (idleFrameCount > idleFrameMax) {
+					// Reset logic if idle
+					if (debug) {
+						console.log("idle timeout");
+					}
+					/*  old implementation did not cover case for happy person just disappear
+					wasHappy = false;
+					candyGiven = false;
+					$("#emotion").html("<h2>Emotion: </h2>");
+					$("#countdown").html("<h2>Countdown: " + (candyDurationRequirement / 1000).toFixed(3) + " seconds</h2>");
+					*/
+					
+					if ((wasHappy) && (duration >= candyDurationRequirement)) { // need to log this person
+						happyCount++;
+						happy4 = happy3;
+						happy3 = happy2; 
+						happy2 = happy1;
+						happy1 = happyPerson;
+						dur4 = dur3;
+						dur3 = dur2;
+						dur2 = dur1;
+						dur1 = duration / 1000;
+						$("#recent1").attr("src",happy1);
+						$("#recent2").attr("src",happy2);
+						$("#recent3").attr("src",happy3);
+						$("#dur1").html(dur1 + " seconds");
+						$("#dur2").html(dur2 + " seconds");
+						$("#dur3").html(dur3 + " seconds");
+						if (debug) {
+							console.log("No longer happy!");
+							console.log("DURATION: " + duration);
+							console.log("HAPPYTIME: " + happyTime);
+						}
+						if (duration > happyTime) {
+						  // New winner
+						  happyTime = duration;
+						  //happyPerson = currentFace; //prevFrame;
+						  $("#winner").attr("src",happyPerson);
+						  $("#wintime").html(happyTime/1000 + " seconds");
+						}
+						//console.log("SAVE THIS PERSON!");
+					}
+					wasHappy = false;
+					candyGiven = false;
+					$("#countdown").html("<h2>Countdown: " + (candyDurationRequirement / 1000).toFixed(3) + " seconds</h2>");	
+					$("#emotion").html("<h2>Emotion: </h2>");
+					
+					
+					
+					
+					
+					
+					
+				}
+		    }
+			else if (event.data.indexOf("FACE:") == 0) {
+				console.log("Got a new face!");
+				// This is a face image, should be 300x300
+				currentFace = "data:image/jpeg;chartset=utf-8;base64," + event.data.substring(5, event.data.length);
+			}
+			else {
+		  		console.log("MESSAGE: " + event.data);
+				  
+				  
+				if (event.data.indexOf("[ INFO ] Start inference") >= 0) {
+					// candy_demo started streaming over websocket
+					running = true; 
+					
+					console.log("Enabling settings button");
+					// enable settings button
+					$("#btnSettings").removeAttr('disabled');
+					
+					// change play button to stop button
+					$("#btnPlayIcon").removeClass("fa-play");
+					$("#btnPlayIcon").addClass("fa-stop");
+				
+				}
+		  
+				else if (event.data.indexOf("EDEVICE:") == 0) {
+					// This is a response with the device type we are running
+					device = event.data.substring(8, event.data.length);
+					$("#titlestring").text(title + " running on the " + device);
+				}
+
+				else if (event.data.indexOf("EMOTION") == 0) {
+
+					
+					idleFrameCount = 0;
+					temp_emotion = event.data.substring(8, event.data.length);
+					
+					
+					// Smooth emotion here
+
+					
+					em_arr[em_pnt] = temp_emotion;
+					em_pnt += 1;
+					
+					if (em_pnt >= em_buffer_size) {  
+						em_pnt = 0;
+					}
+					var count = {};
+					em_arr.forEach(function(i) { count[i] = (count[i]||0) + 1;});
+					//console.log(count);
+					
+					
+					// Max value...has issues transitioning between two entries
+					// emotion = Object.keys(count).reduce(function(a, b){ return count[a] > count[b] ? a : b });
+
+
+
+					
+					// At least a certain threshold of last x frames 
+					//  (set emotion_threshold lower than em_buffer_size and have em_buffer_size ~ 10 or so)
+
+					// If last y frames are the same (set emotion_threshold == em_buffer_size, and lower to value like 5)
+					
+					Object.entries(count).forEach(([key, val]) => {
+						if (val >= emotion_threshold) {
+							emotion = key;
+						}
+					});
+					
+					
+				
+					
+					//console.log(emotion);
+
+					// End emotion smoothing
+					
+					$("#emotion").html("<h2>Emotion: " + emotion + "</h2>");
+					if (emotion == "happy") {
+						if (!wasHappy) { // starting being happy
+							wasHappy = true;
+							if (debug) {
+								console.log("start being happy");
+							}
+							happyStart = Date.now();
+							$("#emotion").html("<h2>Emotion: " + emotion + "</h2>");
+						}
+						if (wasHappy) {
+							// Happy countdown timer
+							currentTime = Date.now();
+							duration = currentTime - happyStart;
+							countdownTime = candyDurationRequirement - duration;
+							if (countdownTime <= 0) {
+								if (!candyGiven) {
+									// Send candy message
+									ws.send("candy:on");
+									candyGiven = true;
+									happyPerson = currentFace; //prevFrame;
+									if (debug) {
+										console.log("give candy!");
+									}
+								}
+							  countdownTime = 0;
+							}
+							if (debug) {
+								console.log("Happy current duration: " + duration);
+							}
+							
+							$("#countdown").html("<h2>Countdown: " + (countdownTime / 1000).toFixed(3) + " seconds</h2>");
+						}
+					}
+					else {  // not happy
+						
+						if ((wasHappy) && (duration >= candyDurationRequirement)) { // need to log this person
+							happyCount++;
+							happy4 = happy3;
+							happy3 = happy2; 
+							happy2 = happy1;
+							happy1 = happyPerson;
+							dur4 = dur3;
+							dur3 = dur2;
+							dur2 = dur1;
+							dur1 = duration / 1000;
+							$("#recent1").attr("src",happy1);
+							$("#recent2").attr("src",happy2);
+							$("#recent3").attr("src",happy3);
+							$("#dur1").html(dur1 + " seconds");
+							$("#dur2").html(dur2 + " seconds");
+							$("#dur3").html(dur3 + " seconds");
+							if (debug) {
+								console.log("No longer happy!");
+								console.log("DURATION: " + duration);
+								console.log("HAPPYTIME: " + happyTime);
+							}
+							if (duration > happyTime) {
+							  // New winner
+							  happyTime = duration;
+							  //happyPerson = currentFace; //prevFrame;
+							  $("#winner").attr("src",happyPerson);
+							  $("#wintime").html(happyTime/1000 + " seconds");
+							}
+							//console.log("SAVE THIS PERSON!");
+						}
+						wasHappy = false;
+						candyGiven = false;
+						$("#countdown").html("<h2>Countdown: " + (candyDurationRequirement / 1000).toFixed(3) + " seconds</h2>");
+					}
+				
+				}
+				else if (event.data.indexOf("global mutex initialization failed") >= 0) {
+					restartvpu = true;
+				}
+				else {
+					if (debug) {
+						console.log("LOG: " + event.data);
+					}
+					if (loading) {
+						$("#videotag").html("Starting inference engine...");
+						$("#frame").attr("src","img/loader.gif");
+						$("#frame").attr("height",480);
+						$("#frame").attr("width",640);
+						
+						
+						if( window.innerHeight == screen.height) {
+							// browser is fullscreen
+							
+							$("#demo_description").html("<h4>" + datastring + "</h4>");
+						}
+						else {
+							$("#demo_description").html("<h5>" + datastring + "</h5>");	
+						}
+						
+					}
+
+				}
+			}
+		};
+	}
+}
+function sendMessage(msg) {
+  console.log("sending message: " + msg);
+  ws.send(msg);
+}
+  
+
+
+function send_settings() {
+	// Function to send settings over websocket to the application/websocketd
+	
+	// Candy duration  candy_duration (float)
+	var selectedDuration = $("#candy_duration").children("option:selected").val();
+	//console.log("Setting candy value to " + selectedDuration + " ms");
+	ws.send("duration:" + selectedDuration);
+	
+	// Alpha setting  tempalpha (double)
+	var selectedAlpha = $("#id_line_opacity").val() / 100;
+	console.log("Setting line opacity to " + selectedAlpha);
+	ws.send("alpha:" + selectedAlpha);
+	
+	// Line color  
+	var selectedLineColor = $("#id_line_color").children("option:selected").val();
+	console.log("Setting line color to " + selectedLineColor);
+	ws.send("linecolor:" + selectedLineColor);
+	
+	// ID window size  id_window_size (double)
+	var selectedIDWindowSize = $("#id_window_size").val() / 100;
+	console.log("Setting line window size to " + selectedIDWindowSize);
+	ws.send("windowsize:" + selectedIDWindowSize);
+	
+	// Statistics color
+	var selectedStatsColor = $("#id_stats_color").children("option:selected").val();
+	console.log("Setting stats color to " + selectedStatsColor);
+	ws.send("statscolor:" + selectedStatsColor);	
+	
+	// Emotion Bar Enable/Disable
+	var selectedEmotionBar = $("#id_show_emotionsbar").is(":checked");
+	console.log("Setting emotions bar to: " + selectedEmotionBar);
+	ws.send("emotionbar:" + selectedEmotionBar);
+}
+
+function send_target_settings() {
+	// Function to send settings over websocket to the application/websocketd
+	
+	var faceTarget = $("#face_detection").children("option:selected").val();
+	//var emotionTarget = $("#emotion_detection").children("option:selected").val();
+	
+	startDemo(faceTarget + "+" + faceTarget);
+	$('#targetModal').modal('hide');
+	$("#videotag").html("Please start inference engine");
+	startIE();
+}
+
+function default_settings() {
+	// Function to set the defaults we want when the page loads.  
+	
+}
+
+function get_settings() {
+	// Function to return settings from the C++ app
+}
+
+function startDemo(arg) {
+    //console.log("Clicked startdemo");
+	if (host == "") { 
+		alert("You cannot double click this to start, please go to http://127.0.0.1:9000");
+	}
+	wsdemo = new WebSocket('ws://' + host + ':9000/');
+	wsdemo.onopen = function() {
+	  console.log("demo websocket opened");
+	  wsdemo.send(arg);
+	};
+	wsdemo.onclose = function() {
+	  console.log("demo websocket closed");  
+	};
+	wsdemo.onmessage = function(event) {
+	  if (event.data.indexOf("Serving using application") >= 0) {
+		// candy_demo.exe is ready to be served over websocket
+		// enable play button
+		$("#btnPlay").removeAttr('disabled');
+	  }
+	  else {
+	    console.log("DEMO: " + event.data);
+      }
+	}
+}		
+
+// This section is how you could automatically change settings instead of requiring a save button click
+/* 
+$(document).ready(function(){
+    $("#candy_duration").change(function(){
+        var selectedDuration = $(this).children("option:selected").val() * 1000;
+        console.log("Setting candy value to " + selectedDuration + "ms");
+    });
+});
+*/
+
+
+</script>
+	
+	
+	
+  </head>
+  <body onload="init();">
+  
+
+<nav class="navbar navbar-expand-md navbar-dark fixed-top bg-dark">
+    <div class="d-flex flex-grow-1">
+        <span class="w-100 d-lg-none d-block"><!-- hidden spacer to center brand on mobile --></span>
+		<img src="img/element.svg" style="margin-right:30px;">
+        <a class="navbar-brand d-none d-lg-inline-block titlefont" id="titlestring" href="#">
+            <!-- HPE VPU Module powered by Intel® Movidius® Myriad X -->
+        </a>
+        <a class="navbar-brand-two mx-auto d-lg-none d-inline-block" href="#">
+            
+        </a>
+        <div class="w-100 text-right">
+            <button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#myNavbar">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+        </div>
+    </div>
+        <div class="d-flex w-100 justify-content-end order-3">
+		<!--
+            <button disabled type="button" id="btnPlay" class="btn btn-primary" style="margin-right:10px;" title="Start Demo" onclick="startIE();">
+				<i id="btnPlayIcon" class="fas fa-play"></i>
+			</button>		
+            <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#targetModal" style="margin-right:10px;" title="Target Settings">
+				<i class="fas fa-bullseye"></i>
+			</button>		
+			-->	
+            <button disabled type="button" id="btnSettings" class="btn btn-primary" data-toggle="modal" data-target="#exampleModal" title="Demo Settings">
+				<i class="fas fa-edit"></i>
+			</button>
+        </div>
+</nav>
+  
+<main role="main" style="margin-bottom: 50px; margin-top: 20px;">
+
+  <!-- Main jumbotron for a primary marketing message or call to action -->
+  <div class="container-fluid">
+  
+    <div class="row">
+	<p></p>
+	</div>
+	
+	
+	<div class="row">  <!-- this is our main row, everything else will be in here -->
+		<div class="col-1"></div> <!-- spacer on left -->
+		<div class="col-md-6"> <!-- for live video -->
+			<div class="row">
+				<h2 class="" id="videotag">Please configure target</h2>
+			</div>
+			<div class="row">
+				<img id="frame" width=640 height=480>
+			</div>
+			<div class="row">
+				<div id="emotion"></div>
+			</div>
+			<div class="row">
+				<div id="countdown"></div>
+			</div>
+		</div>
+
+		<div class="col-md-4"> <!-- for high score and recents -->
+			<div class="row">
+				<h2>High Score</h2>
+			</div>
+			<div class="row">
+				<div class="col">
+					<img id="winner" style="width: auto; height: 200px;">
+				</div>
+				<div class="col">
+					<p></p><p></p>
+					<h3 id="wintime"></h3>
+				</div>
+			</div>
+			<div class="row"><p></p><p></p></div>
+			<div class="row">
+				<h2>Recent Winners</h2>
+			</div>
+			<div class="row"> <!-- top two entries -->
+				<div class="col-4">
+					<img id="recent1" style="width: 50%; height: auto;">
+					<p><span id="dur1"></span></p>
+				</div>
+				<div class="col-4">
+					<img id="recent2" style="width: 50%; height: auto;">
+					<p><span id="dur2"></span></p>
+				</div>
+
+				<div class="col-4">
+					<img id="recent3" style="width: 50%; height: auto;">
+					<p><span id="dur3"></span></p>
+				</div>
+				
+			</div>
+		</div>
+		<div class="col-1"></div> <!-- spacer on right -->
+	</div>
+
+	<div>
+	  <div id="emotion">
+	  </div>
+	  <div id="countdown">
+	  </div>
+    </div>
+
+
+  <p></p>
+
+	<div class="row">  <!-- this is the explanation section -->
+		<div class="col-2"></div> <!-- spacer on left -->
+		<div class="col-md-8"> <!-- for live video -->
+			<div class="row">
+				<!-- <h2 class="" id="videotag">About this demo</h2> -->
+			</div>
+			<div class="row" id="demo_description">
+
+			</div>
+		</div>
+	</div>
+
+  </div> <!-- /container -->
+
+</main>
+
+<!-- Settings Modal -->
+<div class="modal fade" id="exampleModal" tabindex="-1" role="dialog" aria-labelledby="exampleModalLabel" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="exampleModalLabel">Candy Demo Settings</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        
+		<div class="form-group">
+		  <label for="candy_duration">Set seconds to run dispenser:</label>
+		  <select class="form-control" id="candy_duration">
+			<option>2</option>
+			<option>2.5</option>
+			<option>3</option>
+			<option>3.5</option>
+			<option>4</option>
+		  </select>
+		</div>
+		<form>
+			<div class="form-group">
+				<label for="id_line_opacity">Identification Line Opacity</label>
+				<input type="range" class="form-control-range" id="id_line_opacity">
+			</div>
+		</form>
+		<div class="form-group">
+		  <label for="id_line_color">Identification Line Color:</label>
+		  <select class="form-control" id="id_line_color">
+			<option>Gray</option>
+			<option>Blue</option>
+			<option>Red</option>
+			<option>Green</option>
+			<option>Yellow</option>
+			<option>Teal</option>
+			<option>Purple</option>
+			<option>Black</option>
+			<option>White</option>
+		  </select>
+		</div>
+		<form>
+			<div class="form-group">
+				<label for="formControlRange">Identification Window Size</label>
+				<input type="range" class="form-control-range" id="id_window_size" value="100">
+			</div>
+		</form>
+		<div class="form-group">
+		  <label for="id_stats_color">Statistics Color:</label>
+		  <select class="form-control" id="id_stats_color">
+			<option>Gray</option>
+			<option>Blue</option>
+			<option>Red</option>
+			<option>Green</option>
+			<option>Yellow</option>
+			<option>Teal</option>
+			<option>Purple</option>
+			<option>Black</option>
+			<option>White</option>
+			<option>Off</option>
+		  </select>
+		</div>		
+		<div class="form-group">
+		  <label for="id_show_emotionsbar">Display Emotions Bar:</label>
+		  <input type="checkbox" class="form-control" id="id_show_emotionsbar">
+		</div>				
+		
+		
+		
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+        <button type="button" onclick="send_settings();" class="btn btn-primary">Save changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Target Settings Modal -->
+<div class="modal fade" id="targetModal" tabindex="-1" role="dialog" aria-labelledby="targetModalLabel" aria-hidden="true">
+  <div class="modal-dialog" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="targetModalLabel">Candy Demo Target Settings</h5>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+          <span aria-hidden="true">&times;</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        
+		<div class="form-group">
+		  <label for="face_detection">Face and Emotion Detection Target:</label>
+		  <select class="form-control" id="face_detection">
+			<option>CPU</option>
+			<option>VPU</option>
+			<option>HDDL</option>
+		  </select>
+		</div>
+		<!--
+		<div class="form-group">
+		  <label for="emotion_detection">Emotion Detection Target:</label>
+		  <select class="form-control" id="emotion_detection">
+			<option>CPU</option>
+			<option>VPU</option>
+		  </select>
+		</div>
+		-->
+
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+        <button type="button" onclick="send_target_settings();" class="btn btn-primary">Configure Target</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<footer class="container" style="margin: 0; position: absolute; bottom: 0;">
+	<div class="row">
+		<div class="col-1"></div>
+		<div class="col-md-6">
+			<p>&copy; Hewlett Packard Enterprise 2019</p>
+		</div>
+		<div class="col-md-4"></div>
+		<div class="col-1"></div>
+	</div>
+</footer>
+</html>
+

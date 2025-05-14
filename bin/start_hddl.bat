@@ -1,0 +1,1 @@
+"C:\Program Files (x86)\IntelSWTools\openvino_2019.2.275\inference_engine\external\hddl\bin\hddldaemon.exe"

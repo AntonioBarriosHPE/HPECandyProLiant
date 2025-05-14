@@ -1,0 +1,16 @@
+[00] threadId=8600 threadName=ThreadPoolT0
+[01] threadId=8076 threadName=ThreadPoolT1
+[02] threadId=4108 threadName=ThreadPoolT2
+[03] threadId=6408 threadName=DeviceManager0T0
+[04] threadId=8784 threadName=InfoPrinterT0
+[05] threadId=4588 threadName=InfoServer
+[06] threadId=7452 threadName=InfoPrinter
+[07] threadId=7736 threadName=DS.Squeeze2
+[08] threadId=2036 threadName=Wt2.1-T0
+[09] threadId=5372 threadName=Wt2.1-SyncT0
+[10] threadId=8688 threadName=Wt2.4-T0
+[11] threadId=5104 threadName=Wt2.4-SyncT0
+[12] threadId=4076 threadName=Wt2.2-T0
+[13] threadId=4936 threadName=Wt2.2-SyncT0
+[14] threadId=9132 threadName=Wt2.3-T0
+[15] threadId=4872 threadName=Wt2.3-SyncT0

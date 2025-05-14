@@ -1,0 +1,34 @@
+Initializing HPE Edgeline VPU Module
+HDDL_INSTALL_DIR=c:\Program Files (x86)\IntelSWTools\openvino\deployment_tools\inference_engine\external\hddl
+
+HDDL_INSTALL_DIR=c:\Program Files (x86)\IntelSWTools\openvino\deployment_tools\inference_engine\external\hddl
+
+c:\Program Files (x86)\IntelSWTools\openvino\deployment_tools\inference_engine\external\hddl
+OpenVINO environment is set -  c:\Program Files (x86)\IntelSWTools\openvino\deployment_tools\inference_engine\external\h
+ddl
+Copying required binaries to the OpenVINO hddl path...
+Copied  C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\bsl_reset.exe
+Copied  C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\hpe_reset.exe
+Copied  C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\bsl.dll
+Copied  C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\json-c.dll
+Copied  C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\ilorest_chif.dll
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}
+expand-archive "C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish.zip" "C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}"
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\__init__.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\hpilo\risblobstore2.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\hpilo\rishpilo.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\hpilo\__init__.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\rest\v1.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\rest\__init__.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\config.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\ris.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\rmc.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\rmc_helper.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\sharedtypes.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\tpdefs.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\validation.py
+C:\Users\iot\AppData\Local\Temp\{ADBE36E5-CBED-4024-8DD9-AFE8448FC3DF}\redfish\ris\__init__.py
+14 File(s) copied
+Copied binaries and libraries to hddl path successfully
+path:  c:\Program Files (x86)\IntelSWTools\openvino\deployment_tools\inference_engine\external\hddl\bin
+Please enter any key to exit windows
