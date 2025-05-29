@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <title>Smile for Candy!</title>
+	<link rel="icon" type="image/png" href="/static/img/favicon.ico">
+    <script src="/static/js/jquery-3.3.1.min.js"></script>
+    <script src="/static/js/bootstrap.js"></script>
+    <link href="/static/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/css/all.css" rel="stylesheet"> 
+    <link href="/static/css/fonts.css" rel="stylesheet">
+    <style>
+        html * { font-family: Metric-Light; }
+        #videoOuterContainer { display: flex; justify-content: center; align-items: flex-start; width: 100%; padding-top: 10px; }
+        #videoContainer { position: relative; width: 100%; max-width: 800px; background-color: #222; overflow: hidden; box-shadow: 0 4px 8px rgba(0,0,0,0.1); border-radius: 8px;}
+        #videoElement { display: block; width: 100%; height: auto; object-fit: contain; background-color: #333; border: 1px solid #555;}
+        html,body{ height: 100%; }
+        h2, h4 { font-family: 'Metric-Medium'; }
+        .titlefont { font-family: 'Metric-Semibold'; font-size: 150%; }
+        .leaderboard-img { border-radius: 5px; object-fit: cover; background-color: #eee; }
+        .recent-winner-img { width: 50px; height: 50px; }
+        .high-score-img { width: 150px; height: 150px; }
+        .leaderboard-entries { max-height: 380px; overflow-y: auto; border: 1px solid #eee; padding: 10px; border-radius: 5px;}
+        .leaderboard-entry { display: flex; align-items: center; margin-bottom: 6px; padding: 6px; border-radius: 4px; background-color: #f9f9f9; transition: background-color 0.3s, transform 0.2s; }
+        .leaderboard-entry:hover { background-color: #e9ecef; transform: scale(1.01); }
+        .leaderboard-rank { font-weight: bold; margin-right: 8px; min-width: 25px; text-align: center; font-size:0.8em; color: #343a40; }
+        .leaderboard-details { display: flex; flex-direction: column; margin-left: 10px; }
+        .leaderboard-time { font-size: 0.9em; color: #007bff; font-weight: bold; }
+        .leaderboard-location { font-size: 0.75em; color: #6c757d; }
+        .new-record-highlight { animation: newRecordGlow 1.5s ease-out; }
+        @keyframes newRecordGlow { 0%, 100% { box-shadow: 0 0 0px #17a2b8; } 50% { box-shadow: 0 0 12px 4px rgba(23, 162, 184, 0.6); } }
+        .status-text { font-size: 1.1rem; margin-top: 5px;}
+        .plus-time { color: orange !important; font-weight: bold; margin-left: 5px; }
+        .text-target-emotion { font-weight: bold; color: #007bff; }
+        .text-instruction { font-weight: bold; }
+        .text-countdown-timer { font-weight: bold; } 
+        body { padding-bottom: 60px; }
+    </style>
+  </head>
+  <body>
+
+    <nav class="navbar navbar-expand-md navbar-dark fixed-top bg-dark" style="top: 55px;">
+        <div class="d-flex flex-grow-1">
+            <img src="/static/img/element.svg" style="margin-right:20px; height: 30px;" alt="HPE Element">
+            <a class="navbar-brand d-none d-lg-inline-block titlefont" id="titlestring" href="#">Smile for Candy!</a>
+            <div class="w-100 text-right"><button class="navbar-toggler" type="button" data-toggle="collapse" data-target="#myNavbar"><span class="navbar-toggler-icon"></span></button></div>
+        </div>
+        <div class="collapse navbar-collapse" id="myNavbar">
+            <ul class="navbar-nav ml-auto">
+                <li class="nav-item"><button type="button" id="btnStartDemo" class="btn btn-primary mr-2" title="Start/Stop Demo"><i id="btnPlayIcon" class="fas fa-play"></i> Start Demo</button></li>
+                <li class="nav-item"><button type="button" id="btnSettings" class="btn btn-secondary" data-toggle="modal" data-target="#settingsModal" title="Demo Settings" disabled><i class="fas fa-edit"></i> Settings</button></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main role="main" style="margin-top: 120px; margin-bottom: 70px;">
+      <div class="container-fluid">
+        <div class="row">
+            <div class="col-lg-1 d-none d-lg-block"></div>
+            <div class="col-lg-7 col-md-12">
+                <div class="row"><div class="col"><h4 id="videoStatus" class="text-center text-md-left status-text">Status: Idle. Click Start Demo.</h4></div></div>
+                <div class="row justify-content-center mt-2"><div id="videoOuterContainer"><div id="videoContainer">
+                    <img id="videoElement" src="/static/img/happy_face.jpg" alt="Video feed">
+                </div></div></div>
+                <div class="row mt-2"><div class="col text-center text-md-left"><h4 id="emotionDisplay" class="status-text">Detected: N/A</h4></div></div>
+                <div class="row"><div class="col text-center text-md-left"><h4 id="targetEmotionDisplay" class="status-text">Target: ---</h4></div></div>
+                <div class="row"><div class="col text-center text-md-left"><h4 id="countdownDisplay" class="status-text">Smile for candy!</h4></div></div>
+                <div class="row"><div class="col text-center text-md-left"><h4 id="minigameScoreDisplay" class="status-text">Bonus Time: +0.0s</h4></div></div>
+            </div>
+            <div class="col-lg-3 col-md-12 mt-4 mt-lg-0">
+                <div class="row"><div class="col"><h2>Champion Smiler</h2></div></div>
+                <div class="row align-items-center mt-1">
+                    <div class="col-5 text-center"><img id="winnerImg" src="/static/img/happy_face.jpg" class="leaderboard-img high-score-img" alt="Winner"></div>
+                    <div class="col-7"><h4><span id="winnerTimeDisplay">0.0s</span></h4><div class="leaderboard-location">Discover Las Vegas</div></div>
+                </div>
+                <hr>
+                <div class="row mt-3"><div class="col"><h2>Leaderboard</h2></div></div>
+                <div id="leaderboardEntries" class="leaderboard-entries mt-2"><div class="text-center text-muted py-3">Waiting for smilers...</div></div>
+            </div>
+            <div class="col-lg-1 d-none d-lg-block"></div>
+        </div>
+        <hr class="mt-4">
+        <div class="row mt-4"><div class="col-lg-8 offset-lg-2 col-md-10 offset-md-1 col-sm-12">
+            <h5>About this Demo</h5>
+            <p id="demoDescription" style="font-size: 0.9rem;">Smile for at least <span id="minSmileTimeAbout">5</span> seconds to get candy (simulated)! Then, play the emotion-matching minigame for bonus points! The snapshot for the leaderboard is taken when the initial smile requirement is met. Good luck!</p>
+        </div></div>
+      </div>
+    </main>
+
+    <div class="modal fade" id="settingsModal" tabindex="-1" role="dialog" aria-labelledby="settingsModalLabel" aria-hidden="true">
+      <div class="modal-dialog" role="document"><div class="modal-content">
+          <div class="modal-header"><h5 class="modal-title" id="settingsModalLabel">Demo Settings</h5><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">×</span></button></div>
+          <div class="modal-body">
+            <div class="form-group"><label for="happyTimeRequirementInput">Min. Happy Time for Candy (s):</label><input type="number" class="form-control" id="happyTimeRequirementInput" value="5" step="0.1" min="1"></div>
+            <div class="form-group"><label for="candyMotorDurationInput">Dispenser Motor Run Time (s):</label><input type="number" class="form-control" id="candyMotorDurationInput" value="2" step="0.1" min="0.5"></div>
+            <div class="form-group"><label for="candyCooldownInput">Candy Cooldown Time (s):</label><input type="number" class="form-control" id="candyCooldownInput" value="5" step="1" min="0"></div>
+          </div>
+          <div class="modal-footer"><button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button><button type="button" id="applySettingsButton" class="btn btn-primary">Apply</button></div>
+      </div></div>
+    </div>
+    <footer class="footer mt-auto py-3 bg-light fixed-bottom"><div class="container text-center"><span class="text-muted" style="font-size:0.8rem;">© HPE 2024</span></div></footer>
+
+    <script type="text/JavaScript">
+        var ws; 
+        var host = window.location.hostname || "localhost";
+        var wsPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
+        var wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
+        var wsUrl = `${wsProtocol}://${host}:${wsPort}/ws`;
+        var isDemoRunning = false;
+        var defaultUserImg = "/static/img/happy_face.jpg";
+
+        var videoElement = $("#videoElement");
+        var videoStatus = $("#videoStatus");
+        var emotionDisplay = $("#emotionDisplay");
+        var countdownDisplay = $("#countdownDisplay");
+        var targetEmotionDisplay = $("#targetEmotionDisplay");
+        var minigameScoreDisplay = $("#minigameScoreDisplay");
+        var winnerImg = $("#winnerImg");
+        var winnerTimeDisplay = $("#winnerTimeDisplay");
+        var leaderboardEntriesEl = $("#leaderboardEntries");
+        var minSmileTimeAboutEl = $("#minSmileTimeAbout");
+        
+        var currentHappyDurationRequirementMs = 5000;
+        var currentCandyMotorOnDurationMs = 2000; 
+        var currentCandyCooldownS = 5;          
+
+        var initialSmileStartTimeMs = 0;
+        var initialCandyDispensedThisStreak = false; 
+        var leaderboardSnapshotBase64 = null;
+        
+        var recentWinners = []; 
+        var highScore = {img: defaultUserImg, timeMs: 0, location: "Discover Las Vegas"};
+        var lastFrameTime = 0, frameCount = 0, calculatedFps = 0, fpsUpdateInterval = 1000; 
+        var processingClick = false;
+
+        function updateVideoFrame(base64jpeg) {
+            videoElement.attr("src", "data:image/jpeg;base64," + base64jpeg);
+        }
+        
+        function updateLeaderboardUI() {
+            leaderboardEntriesEl.empty();
+            if (recentWinners.length === 0) {
+                leaderboardEntriesEl.html('<div class="text-center text-muted py-3">Waiting for smilers...</div>');
+            } else {
+                const topWinners = recentWinners.slice(0, 10);
+                topWinners.forEach((winner, index) => {
+                    const entryDiv = $(`
+                        <div class="leaderboard-entry">
+                            <div class="leaderboard-rank">#${index + 1}</div>
+                            <img src="${winner.img || defaultUserImg}" class="leaderboard-img recent-winner-img" alt="Winner">
+                            <div class="leaderboard-details">
+                                <span class="leaderboard-time">${winner.time}</span>
+                                <span class="leaderboard-location">${winner.location}</span>
+                            </div>
+                        </div>
+                    `);
+                    if (winner.timeMs === highScore.timeMs && winner.img === highScore.img && index === 0) { 
+                        entryDiv.addClass('new-record-highlight');
+                    }
+                    leaderboardEntriesEl.append(entryDiv);
+                });
+            }
+            winnerImg.attr('src', highScore.img);
+            winnerTimeDisplay.text((highScore.timeMs / 1000).toFixed(1) + 's');
+        }
+        
+        function recordFinalScore(snapshotForLeaderboard, initialSmileDuration, minigameBonus) {
+            console.error("!!!!!!!!!! ENTERING recordFinalScore !!!!!!!!!!");
+            console.log("recordFinalScore called with snapshot:", snapshotForLeaderboard ? "Exists, len=" + snapshotForLeaderboard.length : "NULL or Empty");
+            console.log("recordFinalScore initialSmileDuration (requirement):", initialSmileDuration, "minigameBonus:", minigameBonus);
+
+            console.log("SNAPSHOT DEBUG (inside recordFinalScore):");
+            console.log("- Has snapshot data:", !!snapshotForLeaderboard);
+            
+            if (snapshotForLeaderboard) {
+                console.log("- Snapshot length:", snapshotForLeaderboard.length);
+                console.log("- First 20 chars:", snapshotForLeaderboard.substring(0, 20));
+            }
+            
+            const totalScoreMs = initialSmileDuration + minigameBonus;
+            const totalScoreSec = (totalScoreMs / 1000).toFixed(1) + 's';
+            let isNewOverallHighScore = totalScoreMs > highScore.timeMs;
+            const entryImage = snapshotForLeaderboard ? `data:image/jpeg;base64,${snapshotForLeaderboard}` : defaultUserImg;
+
+            if (snapshotForLeaderboard) {
+                const testImg = new Image();
+                testImg.onload = () => console.log("✓ Image loads successfully (from recordFinalScore):", testImg.width, "x", testImg.height);
+                testImg.onerror = () => console.error("✗ Image failed to load (from recordFinalScore)");
+                testImg.src = entryImage;
+            }
+
+            const newEntry = {
+                img: entryImage, time: totalScoreSec, location: "Discover Las Vegas",
+                timeMs: totalScoreMs, newRecord: false 
+            };
+
+            let alreadyExists = recentWinners.some(w => w.timeMs === totalScoreMs && w.img === entryImage);
+            console.log("Recording final score with snapshot (from recordFinalScore):", 
+                    snapshotForLeaderboard ? snapshotForLeaderboard.substring(0, 30) + "..." : "None");
+            console.log("Recording final score (from recordFinalScore):", newEntry);
+            if (!alreadyExists || recentWinners.length === 0) {
+                recentWinners.push(newEntry);
+            }
+           
+            recentWinners.sort((a, b) => b.timeMs - a.timeMs); 
+            recentWinners = recentWinners.slice(0, 10); 
+
+            if (isNewOverallHighScore) {
+                highScore.img = entryImage;
+                highScore.timeMs = totalScoreMs;
+                console.log("JS: New High Score! (from recordFinalScore)", highScore);
+                if(recentWinners.length > 0 && recentWinners[0].timeMs === highScore.timeMs) {
+                    recentWinners[0].newRecord = true; 
+                }
+            }
+            updateLeaderboardUI();
+            console.error("!!!!!!!!!! LEAVING recordFinalScore !!!!!!!!!!");
+        }
+
+        function resetUIDisplayToIdle() {
+            countdownDisplay.text("Smile for candy!");
+            targetEmotionDisplay.text("Target: ---");
+            minigameScoreDisplay.text("Bonus Time: +0.0s");
+            emotionDisplay.text("Detected: N/A");
+            videoStatus.text("Status: Idle. Click Start Demo.").removeClass("text-success text-danger text-warning");
+            videoElement.attr("src", defaultUserImg);
+        }
+
+        function connectWebSocket() {
+            if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+                console.log("WS: Already open/connecting."); return;
+            }
+            console.log(`WS: Attempting connect: ${wsUrl}`);
+            videoStatus.text("Status: Connecting...").removeClass("text-success text-danger").addClass("text-warning");
+            try { 
+                ws = new WebSocket(wsUrl); 
+            } catch (e) {
+                console.error("WS: EXCEPTION new WebSocket():", e);
+                videoStatus.text("Status: WS creation error.").addClass("text-danger"); ws = null;
+                if (document.readyState === "complete" || document.readyState === "interactive") setTimeout(connectWebSocket, 3000);
+                return;
+            }
+
+            ws.onopen = function() {
+                console.log("WS: Connection established.");
+                videoStatus.text("Status: Connected. Ready.").removeClass("text-danger text-warning").addClass("text-success");
+                $("#btnStartDemo").prop('disabled', false).removeClass("btn-danger btn-warning").addClass("btn-primary");
+                $("#btnSettings").prop('disabled', false);
+                if (isDemoRunning) { 
+                    console.log("WS: Reconnected, sending start_demo."); 
+                    ws.send(JSON.stringify({command: "start_demo"}));
+                }
+            };
+
+            ws.onmessage = function(evt) {
+                var msg;
+                try {
+                    msg = JSON.parse(evt.data);
+                } catch (e) {
+                    console.error("WS: FATAL Error parsing JSON. Data:", evt.data, "Error:", e);
+                    return; 
+                }
+                
+                var clientTimeMs = Date.now(); 
+                var serverTimeMs = msg.current_time_ms || clientTimeMs;
+
+                if (msg.type === "video_frame" && msg.data) {
+                    updateVideoFrame(msg.data); 
+                    frameCount++;
+                    if (clientTimeMs - lastFrameTime >= fpsUpdateInterval) {
+                        calculatedFps = frameCount / ((clientTimeMs - lastFrameTime) / 1000);
+                        lastFrameTime = clientTimeMs; frameCount = 0;
+                    }
+                } else if (msg.type === "status_update") {
+                    console.log(`JS: Received status_update. GameState from server: "${msg.game_state}", Candy Dispensed This Cycle by Server: ${msg.candy_was_dispensed_this_cycle}`); 
+
+                    var serverSnapshot = msg.leaderboard_snapshot_b64;
+                    if (serverSnapshot !== undefined) {
+                        if (leaderboardSnapshotBase64 !== serverSnapshot) {
+                            console.log(`JS: Client leaderboardSnapshotBase64 changing. Old len: ${leaderboardSnapshotBase64 ? leaderboardSnapshotBase64.length : 'null'}, New (from server) len: ${serverSnapshot ? serverSnapshot.length : 'null'}. Server GameState: "${msg.game_state}"`);
+                            leaderboardSnapshotBase64 = serverSnapshot;
+                        }
+                    }
+
+                    if (msg.ready) { 
+                        console.log("JS: Received explicit 'ready:true' in status_update.");
+                    }
+                    emotionDisplay.text("Detected: " + (msg.current_detected_emotion ? msg.current_detected_emotion.toUpperCase() : "N/A"));
+                    if (isDemoRunning && msg.game_state !== "IDLE" && msg.game_state !== "GAME_OVER") {
+                        videoStatus.text(`Status: Running (FPS: ${calculatedFps.toFixed(1)})`);
+                    } else if (msg.game_state === "IDLE" && !isDemoRunning) {
+                         videoStatus.text("Status: Idle. Click Start Demo."); 
+                    }
+
+                    // CRITICAL: Check if candy was dispensed in this server cycle
+                    if (msg.candy_was_dispensed_this_cycle) {
+                        if (!initialCandyDispensedThisStreak) { 
+                            initialCandyDispensedThisStreak = true;
+                            console.log("JS: initialCandyDispensedThisStreak set to TRUE (because server indicated candy_was_dispensed_this_cycle). Current GameState from msg: " + msg.game_state);
+                        }
+                    }
+
+                    let gameState = msg.game_state; 
+                    targetEmotionDisplay.html("Target: <span class='text-target-emotion'>" + (msg.target_emotion ? msg.target_emotion.toUpperCase() : "---") + "</span>");
+                    minigameScoreDisplay.html("Bonus Time: <span class='plus-time'>+" + (msg.minigame_score_ms / 1000).toFixed(1) + "s</span>");
+                    
+                    if (msg.new_snapshot_taken) {
+                        console.log("New snapshot was just taken! (client-side flag 'new_snapshot_taken' received as true)");
+                    }
+
+                    // Game State UI Updates
+                    if (gameState === "INITIAL_SMILE") {
+                        if (msg.leaderboard_snapshot_b64 === null && leaderboardSnapshotBase64 !== null) {
+                             console.log("JS: GameState is INITIAL_SMILE and server sent null snapshot, client leaderboardSnapshotBase64 cleared.");
+                            leaderboardSnapshotBase64 = null;
+                        }
+                        
+                        if (msg.is_happy_for_initial_smile && msg.initial_smile_streak_start_time_ms > 0) {
+                            initialSmileStartTimeMs = msg.initial_smile_streak_start_time_ms; 
+                            const smileDurationMs = serverTimeMs - initialSmileStartTimeMs;
+
+                            if (initialCandyDispensedThisStreak) { 
+                                countdownDisplay.html(`Candy! <i class="fas fa-candy-cane text-danger"></i> Preparing Minigame...`);
+                            } else if (smileDurationMs >= currentHappyDurationRequirementMs) {
+                                // This part might be redundant if candy_was_dispensed_this_cycle sets the flag reliably,
+                                // but it's a fallback for UI consistency.
+                                countdownDisplay.html(`Candy! <i class="fas fa-candy-cane text-danger"></i> Preparing Minigame...`);
+                                // The actual setting of initialCandyDispensedThisStreak is now primarily handled by msg.candy_was_dispensed_this_cycle
+                            } else if (msg.in_candy_cooldown) { 
+                                countdownDisplay.html(
+                                `Candy Cooldown: <span class="text-warning text-countdown-timer">` +
+                                `${((msg.candy_eligible_again_time - serverTimeMs)/1000).toFixed(1)}s</span>`
+                                );
+                            } else { 
+                                const timeLeftS = Math.max(0, (currentHappyDurationRequirementMs - smileDurationMs) / 1000).toFixed(1);
+                                countdownDisplay.html(`Keep Smiling: <span class="text-info text-countdown-timer">${timeLeftS}s</span>`);
+                            }
+                        } else { 
+                            countdownDisplay.text("Smile for candy!");
+                            initialSmileStartTimeMs = 0; 
+                            if (initialCandyDispensedThisStreak) { 
+                                console.warn("JS: Smile lost during INITIAL_SMILE, but initialCandyDispensedThisStreak was true. Resetting to false.");
+                                initialCandyDispensedThisStreak = false; 
+                            }
+                        }
+                    } else if (gameState === "MINIGAME_BUFFER_SMILE") {
+                        if (!initialCandyDispensedThisStreak && msg.leaderboard_snapshot_b64) {
+                             console.warn("JS: In MINIGAME_BUFFER_SMILE, but initialCandyDispensedThisStreak was false. Setting to true because snapshot exists. Relied on candy_was_dispensed_this_cycle.");
+                             initialCandyDispensedThisStreak = true;
+                        }
+                        const timeLeftMs = Math.max(0, msg.round_deadline_ms - serverTimeMs);
+                        countdownDisplay.html(`Minigame Start! Hold <span class='text-target-emotion'>HAPPY</span> for <span class="text-warning text-countdown-timer">${(timeLeftMs / 1000).toFixed(1)}s</span>`);
+                    
+                    } else if (gameState === "MINIGAME_TRANSITION") {
+                        const timeLeftMs = Math.max(0, msg.round_deadline_ms - serverTimeMs);
+                        countdownDisplay.html(`Next: <span class="text-primary text-instruction">${msg.target_emotion ? msg.target_emotion.toUpperCase() : ''}</span> in <span class="text-warning text-countdown-timer">${(timeLeftMs / 1000).toFixed(1)}s</span>!`);
+                    } else if (gameState === "MINIGAME_PLAYING") {
+                        const timeLeftMs = Math.max(0, msg.round_deadline_ms - serverTimeMs);
+                        countdownDisplay.html(`Hold <span class="text-success text-instruction">${msg.target_emotion ? msg.target_emotion.toUpperCase() : ''}</span> for <span class="text-info text-countdown-timer">${(timeLeftMs / 1000).toFixed(1)}s</span>`);
+                    } else if (gameState === "GAME_OVER") {
+                        console.error("JS: Processing GAME_OVER state. This log MUST appear if GAME_OVER is received.");
+                        let gameOverMsg = `<span class="text-danger">GAME OVER!</span> ${msg.game_over_reason || ''}`;
+                        if (msg.game_over_reset_timer_s !== undefined && msg.game_over_reset_timer_s >= 0) {
+                            gameOverMsg += ` Resetting in <span class="text-warning text-countdown-timer">${msg.game_over_reset_timer_s.toFixed(1)}s</span>...`;
+                        } else { 
+                            gameOverMsg += ` Ready for new game.`;
+                        }
+                        countdownDisplay.html(gameOverMsg);
+                        targetEmotionDisplay.text("Target: ---");
+                        
+                        console.warn(`GAME_OVER state details: initialCandyDispensedThisStreak: ${initialCandyDispensedThisStreak}. Client's current leaderboardSnapshotBase64 length: ${leaderboardSnapshotBase64 ? leaderboardSnapshotBase64.length : 'null'}. Snapshot from *this* GAME_OVER message (msg.leaderboard_snapshot_b64) length: ${msg.leaderboard_snapshot_b64 ? msg.leaderboard_snapshot_b64.length : 'null'}`);
+                        
+                        if (initialCandyDispensedThisStreak) { 
+                            console.warn(">>> About to call recordFinalScore (from GAME_OVER block). Using client's persisted leaderboardSnapshotBase64. <<<");
+                            recordFinalScore(leaderboardSnapshotBase64, currentHappyDurationRequirementMs, msg.minigame_score_ms);
+                        } else {
+                            console.warn("recordFinalScore NOT called (from GAME_OVER block) because initialCandyDispensedThisStreak is false.");
+                        }
+                        initialCandyDispensedThisStreak = false; 
+                        console.log("JS: initialCandyDispensedThisStreak set to FALSE in GAME_OVER.");
+                    } else if (gameState === "IDLE") { 
+                        resetUIDisplayToIdle();
+                        initialCandyDispensedThisStreak = false;
+                        console.log("JS: initialCandyDispensedThisStreak set to FALSE in IDLE.");
+                        if (leaderboardSnapshotBase64 !== null) {
+                            console.log("JS: GameState is IDLE, client leaderboardSnapshotBase64 being cleared.");
+                            leaderboardSnapshotBase64 = null; 
+                        }
+                    } else {
+                        console.warn(`JS: Received UNKNOWN game_state from server: "${gameState}"`);
+                    }
+
+                } else if (msg.type === "demo_stopped") { 
+                    console.log("JS: Received demo_stopped from server.");
+                    videoStatus.text("Status: Demo stopped.").removeClass("text-success text-danger text-warning");
+                    $("#btnStartDemo").prop('disabled', false).removeClass("btn-success btn-primary").addClass("btn-primary").find("i").removeClass("fa-stop").addClass("fa-play").end().contents().last().replaceWith(" Start Demo");
+                    isDemoRunning = false; 
+                    resetUIDisplayToIdle();
+                    leaderboardSnapshotBase64 = null; 
+                    initialCandyDispensedThisStreak = false;
+                    console.log("JS: initialCandyDispensedThisStreak set to FALSE by demo_stopped.");
+                } else if (msg.type === "error") { 
+                    console.error("Error from server:", msg.message); 
+                    videoStatus.text("Status: Error - " + msg.message).addClass("text-danger");
+                    $("#btnStartDemo").prop('disabled', false).removeClass("btn-success btn-primary").addClass("btn-primary").find("i").removeClass("fa-stop").addClass("fa-play").end().contents().last().replaceWith(" Start Demo");
+                    isDemoRunning = false;
+                    resetUIDisplayToIdle();
+                } else if (msg.type === "config_update") { 
+                    currentHappyDurationRequirementMs = msg.settings.happy_time_ms;
+                    currentCandyMotorOnDurationMs = msg.settings.motor_on_ms; 
+                    currentCandyCooldownS = msg.settings.cooldown_s;
+                    $('#happyTimeRequirementInput').val(currentHappyDurationRequirementMs / 1000); 
+                    $('#candyMotorDurationInput').val(currentCandyMotorOnDurationMs / 1000); 
+                    $('#candyCooldownInput').val(currentCandyCooldownS);
+                    minSmileTimeAboutEl.text((currentHappyDurationRequirementMs / 1000).toFixed(1)); 
+                    console.log("JS: Settings updated from server:", msg.settings);
+                }
+            };
+
+            ws.onclose = function(event) {
+                console.log("WS: Connection closed. Code:", event.code, "Reason:", event.reason, "Clean:", event.wasClean);
+                videoStatus.text("Status: Disconnected. Reconnecting...").addClass("text-danger");
+                $("#btnStartDemo").prop('disabled', true).addClass("btn-danger btn-warning");
+                $("#btnSettings").prop('disabled', true);
+                videoElement.attr("src", defaultUserImg); 
+                ws = null; 
+                setTimeout(connectWebSocket, 3000); 
+            };
+
+            ws.onerror = function(err_event) {
+                console.error('WS: WebSocket Error object:', err_event);
+                videoStatus.text("Status: WebSocket connection error.").addClass("text-danger");
+                $("#btnStartDemo").prop('disabled', true).addClass("btn-danger btn-warning");
+                $("#btnSettings").prop('disabled', true);
+            };
+        }
+        
+        $("#btnStartDemo").click(function() {
+            if (processingClick) { console.log("WS: Click ignored, already processing."); return; }
+            processingClick = true;
+            var $thisButton = $(this);
+            console.log("WS: btnStartDemo clicked. Current isDemoRunning:", isDemoRunning);
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                console.log("WS: Start/Stop Demo - WS not open. State:", ws ? ws.readyState : "null");
+                videoStatus.text("Status: Not connected. Try reconnecting...").addClass("text-warning");
+                if (!ws || ws.readyState === WebSocket.CLOSED) { connectWebSocket(); }
+                processingClick = false; return; 
+            }
+            if (ws.readyState === WebSocket.CONNECTING) {
+                console.log("WS: Start Demo - WS still connecting. Please wait.");
+                videoStatus.text("Status: Connecting... Please wait.").addClass("text-warning");
+                processingClick = false; return;
+            }
+
+            var command_to_send = isDemoRunning ? "stop_demo" : "start_demo";
+            console.log("WS: Intending to send command:", command_to_send);
+            ws.send(JSON.stringify({command: command_to_send}));
+            
+            if (command_to_send === "start_demo") {
+                videoStatus.text("Status: Starting demo...").removeClass("text-danger text-warning");
+                $thisButton.removeClass("btn-primary").addClass("btn-success").find("i").removeClass("fa-play").addClass("fa-stop").end().contents().last().replaceWith(" Stop Demo");
+                isDemoRunning = true; 
+                console.log("WS: Set isDemoRunning to true");
+                leaderboardSnapshotBase64 = null; 
+                initialCandyDispensedThisStreak = false; 
+                console.log("JS: initialCandyDispensedThisStreak set to FALSE by btnStartDemo click (start_demo).");
+                initialSmileStartTimeMs = 0;
+            } else { 
+                videoStatus.text("Status: Stopping demo...").removeClass("text-danger text-success");
+                $thisButton.removeClass("btn-success").addClass("btn-primary").find("i").removeClass("fa-stop").addClass("fa-play").end().contents().last().replaceWith(" Start Demo");
+                isDemoRunning = false; 
+                console.log("WS: Set isDemoRunning to false");
+            }
+            setTimeout(function() { processingClick = false; }, 200);
+        });
+
+        $("#applySettingsButton").click(function() {
+            const newHappyTimeS = parseFloat($('#happyTimeRequirementInput').val()); 
+            const newMotorTimeS = parseFloat($('#candyMotorDurationInput').val()); 
+            const newCooldownS = parseInt($('#candyCooldownInput').val());
+            if (isNaN(newHappyTimeS)||newHappyTimeS<1||isNaN(newMotorTimeS)||newMotorTimeS<0.5||isNaN(newCooldownS)||newCooldownS<0) {
+                alert("Invalid settings."); return;
+            }
+            currentHappyDurationRequirementMs = newHappyTimeS * 1000; 
+            currentCandyMotorOnDurationMs = newMotorTimeS * 1000; 
+            currentCandyCooldownS = newCooldownS;
+            minSmileTimeAboutEl.text(newHappyTimeS.toFixed(1));
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: "update_settings", settings: { 
+                    happy_time_ms: currentHappyDurationRequirementMs, 
+                    motor_on_ms: currentCandyMotorOnDurationMs, 
+                    cooldown_s: currentCandyCooldownS 
+                }}));
+            }
+            $('#settingsModal').modal('hide'); 
+            console.log("JS: Applied settings via modal.");
+        });
+
+        $(document).ready(function() {
+            console.log("JS: Document ready. UI init.");
+            $('#happyTimeRequirementInput').val(currentHappyDurationRequirementMs / 1000);
+            $('#candyMotorDurationInput').val(currentCandyMotorOnDurationMs / 1000); 
+            $('#candyCooldownInput').val(currentCandyCooldownS);                   
+            minSmileTimeAboutEl.text((currentHappyDurationRequirementMs / 1000).toFixed(1));
+            resetUIDisplayToIdle(); 
+            videoElement.attr("src", defaultUserImg); 
+            winnerImg.attr('src', highScore.img); 
+            $("#btnStartDemo").prop('disabled', true); 
+            $("#btnSettings").prop('disabled', true);
+            updateLeaderboardUI(); 
+            connectWebSocket();
+        });
+    </script>
+  </body>
+</html>

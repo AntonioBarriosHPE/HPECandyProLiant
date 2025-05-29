@@ -1,0 +1,5 @@
+aiohttp>=3.9.0 
+opencv-python==4.11.0.86
+openvino-dev==2024.6.0
+numpy==1.26.4
+pillow==11.2.1
