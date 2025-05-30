@@ -93,7 +93,8 @@
           <div class="modal-header"><h5 class="modal-title" id="settingsModalLabel">Demo Settings</h5><button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">×</span></button></div>
           <div class="modal-body">
             <div class="form-group"><label for="happyTimeRequirementInput">Min. Happy Time for Candy (s):</label><input type="number" class="form-control" id="happyTimeRequirementInput" value="5" step="0.1" min="1"></div>
-            <div class="form-group"><label for="candyMotorDurationInput">Dispenser Motor Run Time (s):</label><input type="number" class="form-control" id="candyMotorDurationInput" value="2" step="0.1" min="0.5"></div>
+            <div class="form-group"><label for="candyMotorDurationInput">Dispenser Motor Run Time (s) [Arduino TIME]:</label><input type="number" class="form-control" id="candyMotorDurationInput" value="2" step="0.1" min="0.5"></div>
+            <div class="form-group"><label for="spinPwmInput">Motor Spin PWM (0-255) [Arduino SPIN]:</label><input type="number" class="form-control" id="spinPwmInput" value="150" step="10" min="0" max="255"></div>
             <div class="form-group"><label for="candyCooldownInput">Candy Cooldown Time (s):</label><input type="number" class="form-control" id="candyCooldownInput" value="5" step="1" min="0"></div>
           </div>
           <div class="modal-footer"><button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button><button type="button" id="applySettingsButton" class="btn btn-primary">Apply</button></div>
@@ -122,8 +123,9 @@
         var minSmileTimeAboutEl = $("#minSmileTimeAbout");
         
         var currentHappyDurationRequirementMs = 5000;
-        var currentCandyMotorOnDurationMs = 2000; 
-        var currentCandyCooldownS = 5;          
+        var currentCandyMotorOnDurationMs = 2000;
+        var currentSpinPwmValue = 150;
+        var currentCandyCooldownS = 5;
 
         var initialSmileStartTimeMs = 0;
         var initialCandyDispensedThisStreak = false; 
@@ -285,6 +287,7 @@
 
                     if (msg.ready) { 
                         console.log("JS: Received explicit 'ready:true' in status_update.");
+                        if (msg.message) { videoStatus.text("Status: " + msg.message); }
                     }
                     emotionDisplay.text("Detected: " + (msg.current_detected_emotion ? msg.current_detected_emotion.toUpperCase() : "N/A"));
                     if (isDemoRunning && msg.game_state !== "IDLE" && msg.game_state !== "GAME_OVER") {
@@ -293,7 +296,6 @@
                          videoStatus.text("Status: Idle. Click Start Demo."); 
                     }
 
-                    // CRITICAL: Check if candy was dispensed in this server cycle
                     if (msg.candy_was_dispensed_this_cycle) {
                         if (!initialCandyDispensedThisStreak) { 
                             initialCandyDispensedThisStreak = true;
@@ -309,7 +311,6 @@
                         console.log("New snapshot was just taken! (client-side flag 'new_snapshot_taken' received as true)");
                     }
 
-                    // Game State UI Updates
                     if (gameState === "INITIAL_SMILE") {
                         if (msg.leaderboard_snapshot_b64 === null && leaderboardSnapshotBase64 !== null) {
                              console.log("JS: GameState is INITIAL_SMILE and server sent null snapshot, client leaderboardSnapshotBase64 cleared.");
@@ -323,10 +324,7 @@
                             if (initialCandyDispensedThisStreak) { 
                                 countdownDisplay.html(`Candy! <i class="fas fa-candy-cane text-danger"></i> Preparing Minigame...`);
                             } else if (smileDurationMs >= currentHappyDurationRequirementMs) {
-                                // This part might be redundant if candy_was_dispensed_this_cycle sets the flag reliably,
-                                // but it's a fallback for UI consistency.
                                 countdownDisplay.html(`Candy! <i class="fas fa-candy-cane text-danger"></i> Preparing Minigame...`);
-                                // The actual setting of initialCandyDispensedThisStreak is now primarily handled by msg.candy_was_dispensed_this_cycle
                             } else if (msg.in_candy_cooldown) { 
                                 countdownDisplay.html(
                                 `Candy Cooldown: <span class="text-warning text-countdown-timer">` +
@@ -409,9 +407,11 @@
                 } else if (msg.type === "config_update") { 
                     currentHappyDurationRequirementMs = msg.settings.happy_time_ms;
                     currentCandyMotorOnDurationMs = msg.settings.motor_on_ms; 
+                    currentSpinPwmValue = msg.settings.spin_pwm_value;
                     currentCandyCooldownS = msg.settings.cooldown_s;
                     $('#happyTimeRequirementInput').val(currentHappyDurationRequirementMs / 1000); 
                     $('#candyMotorDurationInput').val(currentCandyMotorOnDurationMs / 1000); 
+                    $('#spinPwmInput').val(currentSpinPwmValue);
                     $('#candyCooldownInput').val(currentCandyCooldownS);
                     minSmileTimeAboutEl.text((currentHappyDurationRequirementMs / 1000).toFixed(1)); 
                     console.log("JS: Settings updated from server:", msg.settings);
@@ -479,18 +479,21 @@
         $("#applySettingsButton").click(function() {
             const newHappyTimeS = parseFloat($('#happyTimeRequirementInput').val()); 
             const newMotorTimeS = parseFloat($('#candyMotorDurationInput').val()); 
+            const newSpinPwm = parseInt($('#spinPwmInput').val());
             const newCooldownS = parseInt($('#candyCooldownInput').val());
-            if (isNaN(newHappyTimeS)||newHappyTimeS<1||isNaN(newMotorTimeS)||newMotorTimeS<0.5||isNaN(newCooldownS)||newCooldownS<0) {
+            if (isNaN(newHappyTimeS)||newHappyTimeS<1||isNaN(newMotorTimeS)||newMotorTimeS<0.5||isNaN(newSpinPwm)||newSpinPwm<0||newSpinPwm>255||isNaN(newCooldownS)||newCooldownS<0) {
                 alert("Invalid settings."); return;
             }
             currentHappyDurationRequirementMs = newHappyTimeS * 1000; 
-            currentCandyMotorOnDurationMs = newMotorTimeS * 1000; 
+            currentCandyMotorOnDurationMs = newMotorTimeS * 1000;
+            currentSpinPwmValue = newSpinPwm;
             currentCandyCooldownS = newCooldownS;
             minSmileTimeAboutEl.text(newHappyTimeS.toFixed(1));
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ command: "update_settings", settings: { 
                     happy_time_ms: currentHappyDurationRequirementMs, 
                     motor_on_ms: currentCandyMotorOnDurationMs, 
+                    spin_pwm_value: currentSpinPwmValue,
                     cooldown_s: currentCandyCooldownS 
                 }}));
             }
@@ -502,6 +505,7 @@
             console.log("JS: Document ready. UI init.");
             $('#happyTimeRequirementInput').val(currentHappyDurationRequirementMs / 1000);
             $('#candyMotorDurationInput').val(currentCandyMotorOnDurationMs / 1000); 
+            $('#spinPwmInput').val(currentSpinPwmValue);
             $('#candyCooldownInput').val(currentCandyCooldownS);                   
             minSmileTimeAboutEl.text((currentHappyDurationRequirementMs / 1000).toFixed(1));
             resetUIDisplayToIdle(); 

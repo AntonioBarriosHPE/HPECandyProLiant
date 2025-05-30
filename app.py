@@ -11,18 +11,15 @@ import sys
 import random
 from enum import Enum
 from collections import deque
-# import cProfile # Profiling removed for now
-# import pstats   # Profiling removed for now
-# from pstats import SortKey # Profiling removed for now
+
 from openvino.runtime import Core
-
 from aiohttp import web, WSCloseCode
-
 import cv2
 from PIL import Image
 import io
 
-from hardware_stubs import GPIO_CONTROLLER, is_el300_present
+# Import the new consolidated hardware controllers
+from hardware import MotorControllerInterface, ArduinoMotorController, DummyMotorController
 
 # --- Configuration & Globals ---
 HTTP_HOST = "0.0.0.0"
@@ -35,6 +32,11 @@ STATIC_FILES_PATH = SCRIPT_DIR / "static"
 FACE_DETECTION_MODEL_XML = MODEL_IR_BASE_PATH / "face-detection-adas-0001/FP32/face-detection-adas-0001.xml"
 EMOTION_RECOGNITION_MODEL_XML = MODEL_IR_BASE_PATH / "emotions-recognition-retail-0003/FP32/emotions-recognition-retail-0003.xml"
 
+# Arduino Configuration - SET YOUR PORT HERE or use None for Dummy
+ARDUINO_SERIAL_PORT = "COM8"
+# ARDUINO_SERIAL_PORT = None # To force dummy controller
+ARDUINO_BAUD_RATE = 9600
+
 DETECTION_THRESHOLD = 0.5
 EMOTIONS_CLASSES = ['neutral', 'happy', 'sad', 'surprise', 'angry']
 EMOTION_SMOOTHING_WINDOW_SIZE = 3
@@ -43,6 +45,7 @@ SMOOTHING_CONSENSUS_THRESHOLD = 2
 app_settings = {
     "happy_time_ms": 5000,
     "motor_on_ms": 2000,
+    "spin_pwm_value": 150, # New setting for motor PWM (0-255)
     "cooldown_s": 5
 }
 
@@ -76,7 +79,8 @@ initial_happy_streak_start_time_ms = 0
 leaderboard_snapshot_b64 = None
 leaderboard_snapshot_taken_this_session = False
 candy_eligible_again_time_s = 0
-dispenser_motor_stop_time_s = 0
+# This variable is now used to calculate the cooldown period start time
+dispenser_motor_should_stop_time_s = 0
 minigame_start_time_overall_ms = 0
 minigame_current_score_ms = 0
 current_target_emotion = None
@@ -89,11 +93,17 @@ game_over_display_start_time_s = 0
 emotion_history = deque(maxlen=EMOTION_SMOOTHING_WINDOW_SIZE)
 stable_primary_emotion_name = None
 
+# Global motor controller instance
+MOTOR_CONTROLLER: MotorControllerInterface = None
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(levelname)s] %(asctime)s - %(name)s - %(funcName)s - %(message)s'
 )
 logger = logging.getLogger("hpe_candy_proliant")
+# Set log levels for submodules if needed
+logging.getLogger("hpe_candy_proliant.dummy_motor").setLevel(logging.INFO)
+logging.getLogger("hpe_candy_proliant.arduino_motor").setLevel(logging.INFO)
 
 ie_core = None
 face_detection_net = None
@@ -169,7 +179,7 @@ def preprocess_face_emotion_recognition(face_roi_hwc):
     transposed_face = resized_face.transpose(2, 0, 1)
     return np.expand_dims(transposed_face, 0)
 
-def recognize_emotion(face_roi_for_emotion_hwc): # Changed param name for clarity
+def recognize_emotion(face_roi_for_emotion_hwc):
     if not models_initialized_successfully or not emotion_input_shape_nchw or \
        'h' not in emotion_input_shape_nchw or not emotion_net or not emotion_exec_net: return None, 0.0
     if face_roi_for_emotion_hwc is None or face_roi_for_emotion_hwc.size == 0: return None, 0.0
@@ -204,17 +214,6 @@ async def broadcast(message_dict):
             *[ws.send_str(json.dumps(message_dict)) for ws in active_websockets if not ws.closed],
             return_exceptions=True
         )
-        # Error logging for send failures removed for brevity, but can be added back if needed
-
-async def manage_dispenser():
-    global dispenser_motor_stop_time_s
-    while True:
-        current_time_s = time.time()
-        if dispenser_motor_stop_time_s > 0 and current_time_s >= dispenser_motor_stop_time_s:
-            GPIO_CONTROLLER.turn_dispenser_off()
-            dispenser_motor_stop_time_s = 0
-            logger.info("Dispenser motor turned OFF by manager.")
-        await asyncio.sleep(0.1)
 
 def reset_game_completely():
     global current_game_state, is_initial_happy_streak, initial_happy_streak_start_time_ms
@@ -256,11 +255,11 @@ async def video_stream_producer_loop():
     global is_demo_active, models_initialized_successfully, current_game_state
     global is_initial_happy_streak, initial_happy_streak_start_time_ms
     global leaderboard_snapshot_b64, leaderboard_snapshot_taken_this_session
-    global candy_eligible_again_time_s, dispenser_motor_stop_time_s
+    global candy_eligible_again_time_s, dispenser_motor_should_stop_time_s
     global minigame_start_time_overall_ms, minigame_current_score_ms
     global current_target_emotion, current_target_emotion_set_time_ms, current_round_deadline_ms
     global current_hold_duration_ms, current_transition_ms, last_game_over_reason, game_over_display_start_time_s
-    global emotion_history, stable_primary_emotion_name
+    global emotion_history, stable_primary_emotion_name, MOTOR_CONTROLLER
 
     if not models_initialized_successfully:
         logger.error("Models not init. Video stream cannot proceed.")
@@ -271,8 +270,7 @@ async def video_stream_producer_loop():
     current_game_state = GameState.INITIAL_SMILE
     logger.info("video_stream_producer_loop started, game reset to INITIAL_SMILE.")
 
-    cap = None # Camera capture object
-    # Camera opening logic (same as your provided version)
+    cap = None
     backends_to_try = []
     if platform.system() == "Windows": backends_to_try.append(cv2.CAP_DSHOW)
     elif platform.system() == "Darwin": backends_to_try.append(cv2.CAP_AVFOUNDATION)
@@ -310,7 +308,7 @@ async def video_stream_producer_loop():
             current_time_s = time.time()
             
             snapshot_generated_this_frame = False 
-            candy_dispensed_this_server_cycle = False # NEW FLAG - reset each server processing cycle
+            candy_dispensed_this_server_cycle = False
 
             if current_game_state == GameState.GAME_OVER and game_over_display_start_time_s > 0:
                 if (current_time_s - game_over_display_start_time_s) >= GAME_OVER_RESET_DELAY_S:
@@ -347,7 +345,6 @@ async def video_stream_producer_loop():
                     roi_for_emotion_resized = frame_resized_for_face_det_hwc[fy_m:fy2_m, fx_m:fx2_m]
                     raw_detected_emotion, _ = recognize_emotion(roi_for_emotion_resized)
 
-            # Emotion Smoothing (same as your provided version)
             if raw_detected_emotion: emotion_history.append(raw_detected_emotion)
             elif not detected_faces: emotion_history.clear(); stable_primary_emotion_name = None
             if len(emotion_history) == emotion_history.maxlen:
@@ -362,7 +359,6 @@ async def video_stream_producer_loop():
             primary_emotion_name_for_logic = stable_primary_emotion_name
             ui_in_candy_cooldown = current_time_s < candy_eligible_again_time_s
             
-            # --- Game State Machine ---
             if current_game_state == GameState.INITIAL_SMILE:
                 if primary_emotion_name_for_logic == "happy":
                     if not is_initial_happy_streak:
@@ -383,18 +379,27 @@ async def video_stream_producer_loop():
                                 else: logger.warning("INITIAL_SMILE: frame_to_base64 failed for snapshot.")
                             else: logger.warning("INITIAL_SMILE: No valid face ROI for snapshot.")
                             
-                            GPIO_CONTROLLER.turn_dispenser_on()
-                            candy_dispensed_this_server_cycle = True # SET THE NEW FLAG
-                            dispenser_motor_stop_time_s = current_time_s + (app_settings["motor_on_ms"] / 1000.0)
-                            candy_eligible_again_time_s = dispenser_motor_stop_time_s + app_settings["cooldown_s"]
-                            leaderboard_snapshot_taken_this_session = True
-                            
-                            current_game_state = GameState.MINIGAME_BUFFER_SMILE # State changes here
-                            current_target_emotion = "happy"
-                            minigame_start_time_overall_ms = current_time_ms
-                            current_target_emotion_set_time_ms = current_time_ms
-                            current_round_deadline_ms = current_time_ms + minigame_settings["initial_smile_buffer_ms"]
-                            logger.info(f"INITIAL_SMILE: To MINIGAME_BUFFER_SMILE. Hold HAPPY for {minigame_settings['initial_smile_buffer_ms']}ms. candy_dispensed_this_server_cycle=True.")
+                            logger.info("Attempting to activate motor...")
+                            if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected():
+                                # The activate_motor call is now an async call that waits for completion.
+                                motor_activated_successfully = await MOTOR_CONTROLLER.activate_motor()
+                                if motor_activated_successfully:
+                                    logger.info("Motor activated successfully and cycle completed.")
+                                    candy_dispensed_this_server_cycle = True
+                                    dispenser_motor_should_stop_time_s = current_time_s + (app_settings["motor_on_ms"] / 1000.0)
+                                    candy_eligible_again_time_s = dispenser_motor_should_stop_time_s + app_settings["cooldown_s"]
+                                    leaderboard_snapshot_taken_this_session = True
+                                    
+                                    current_game_state = GameState.MINIGAME_BUFFER_SMILE
+                                    current_target_emotion = "happy"
+                                    minigame_start_time_overall_ms = current_time_ms
+                                    current_target_emotion_set_time_ms = current_time_ms
+                                    current_round_deadline_ms = current_time_ms + minigame_settings["initial_smile_buffer_ms"]
+                                    logger.info(f"INITIAL_SMILE: To MINIGAME_BUFFER_SMILE. candy_dispensed_this_server_cycle=True.")
+                                else:
+                                    logger.error("Failed to activate motor or cycle did not complete.")
+                            else:
+                                logger.warning("MOTOR_CONTROLLER not available or not connected. Cannot dispense candy.")
                 else: 
                     if is_initial_happy_streak:
                         is_initial_happy_streak = False; logger.info("INITIAL_SMILE: Happy streak broken.")
@@ -465,7 +470,7 @@ async def video_stream_producer_loop():
                 "initial_smile_streak_start_time_ms": initial_happy_streak_start_time_ms if is_initial_happy_streak and current_game_state==GameState.INITIAL_SMILE else 0,
                 "leaderboard_snapshot_b64": leaderboard_snapshot_b64,
                 "new_snapshot_taken": snapshot_generated_this_frame,
-                "candy_was_dispensed_this_cycle": candy_dispensed_this_server_cycle, # ADDED FLAG
+                "candy_was_dispensed_this_cycle": candy_dispensed_this_server_cycle,
                 "game_state": current_game_state.name, "target_emotion": current_target_emotion,
                 "round_deadline_ms": current_round_deadline_ms, "minigame_score_ms": minigame_current_score_ms,
                 "game_over_reason": last_game_over_reason if current_game_state==GameState.GAME_OVER else "",
@@ -483,13 +488,10 @@ async def video_stream_producer_loop():
     except asyncio.CancelledError: logger.info("Video stream producer loop was cancelled.")
     except Exception as e:
         logger.error(f"Unhandled error in video_stream_producer_loop: {e}", exc_info=True)
-        # await broadcast({"type": "error", "message": f"Server error: {str(e)}"}) # Be cautious with awaits in broad exceptions
     finally:
         if cap: cap.release(); logger.info("Webcam released in video_stream_producer_loop finally.")
         reset_game_completely()
-        # is_demo_active = False # This is managed by the calling handler (websocket_handler)
         logger.info("Video stream producer loop finished its finally block cleanup.")
-        # DO NOT broadcast demo_stopped from here. It's handled by websocket_handler.
 
 async def websocket_handler(request):
     global is_demo_active, video_producer_task, active_websockets
@@ -497,8 +499,18 @@ async def websocket_handler(request):
     logger.info(f"WS client connected: {request.remote}")
     await ws.send_json({"type": "config_update", "settings": app_settings})
     if models_initialized_successfully:
-        await ws.send_json({"type": "status_update", "ready": True, "game_state": current_game_state.name, "message": "Server ready."})
-        logger.info("Sent initial explicit ready signal to newly connected client.")
+        motor_status_msg = "Motor Controller: "
+        if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected():
+            motor_status_msg += "Connected"
+            if isinstance(MOTOR_CONTROLLER, DummyMotorController):
+                 motor_status_msg += " (Dummy)."
+            elif isinstance(MOTOR_CONTROLLER, ArduinoMotorController):
+                 motor_status_msg += f" (Arduino on {MOTOR_CONTROLLER.port})."
+        else:
+            motor_status_msg += "Not Connected or Error."
+
+        await ws.send_json({"type": "status_update", "ready": True, "game_state": current_game_state.name, "message": f"Server ready. {motor_status_msg}"})
+        logger.info(f"Sent initial ready signal to new client. {motor_status_msg}")
 
     try:
         async for msg in ws: 
@@ -526,26 +538,35 @@ async def websocket_handler(request):
                             logger.info("stop_demo: Demo active. Setting is_demo_active=False, cancelling task.")
                             is_demo_active = False 
                             
-                            task_to_cancel = video_producer_task # Store current task
-                            video_producer_task = None # Prevent re-use before it's fully done
+                            task_to_cancel = video_producer_task
+                            video_producer_task = None
 
                             if task_to_cancel and not task_to_cancel.done():
                                 task_to_cancel.cancel()
                                 try: 
-                                    await task_to_cancel # Wait for its finally block to complete
+                                    await task_to_cancel
                                     logger.info("stop_demo: video_producer_task finished after cancellation.")
                                 except asyncio.CancelledError: 
                                     logger.info("stop_demo: video_producer_task caught CancelledError during await.")
                             
                             logger.info("stop_demo: Broadcasting demo_stopped to all clients.")
-                            await broadcast({"type": "demo_stopped", "message": "Demo stopped by user."}) # Send after task is confirmed done
-                            GPIO_CONTROLLER.turn_dispenser_off() 
-                            dispenser_motor_stop_time_s = 0
+                            await broadcast({"type": "demo_stopped", "message": "Demo stopped by user."})
+                            # No explicit motor stop needed as Arduino handles its own cycle.
                         else: 
                             logger.info("Stop demo cmd, but demo not running."); await ws.send_json({"type": "info", "message": "Demo not active."})
                     
                     elif cmd == "update_settings":
-                        app_settings.update(data.get("settings",{})); logger.info(f"Settings updated: {app_settings}")
+                        new_settings = data.get("settings",{})
+                        app_settings.update(new_settings)
+                        logger.info(f"Settings updated: {app_settings}")
+                        
+                        if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected():
+                            logger.info("Propagating settings to MOTOR_CONTROLLER...")
+                            if 'spin_pwm_value' in new_settings:
+                                await MOTOR_CONTROLLER.configure_spin_pwm(int(app_settings["spin_pwm_value"]))
+                            if 'motor_on_ms' in new_settings:
+                                await MOTOR_CONTROLLER.configure_run_duration(int(app_settings["motor_on_ms"]))
+
                         await broadcast({"type":"config_update","settings":app_settings})
                 
                 except json.JSONDecodeError: 
@@ -563,14 +584,37 @@ async def handle_index_page(request):
     return web.FileResponse(STATIC_FILES_PATH / 'index.html')
 
 async def on_aiohttp_startup(app_obj):
+    global MOTOR_CONTROLLER
     logger.info("Application server starting up...")
     if not initialize_openvino_models():
-        logger.error("OpenVINO init FAILED during startup.")
-    app_obj['dispenser_manager_task'] = asyncio.create_task(manage_dispenser())
-    logger.info("Dispenser manager task created.")
+        logger.error("OpenVINO init FAILED during startup. App will run but CV features will be disabled.")
+    
+    logger.info("Initializing Motor Controller...")
+    if ARDUINO_SERIAL_PORT:
+        logger.info(f"Attempting to use ArduinoMotorController on port {ARDUINO_SERIAL_PORT}.")
+        MOTOR_CONTROLLER = ArduinoMotorController(port=ARDUINO_SERIAL_PORT, baud_rate=ARDUINO_BAUD_RATE)
+    else:
+        logger.info("No ARDUINO_SERIAL_PORT configured. Falling back to DummyMotorController.")
+        MOTOR_CONTROLLER = DummyMotorController()
+
+    connected = await MOTOR_CONTROLLER.connect()
+    if connected:
+        logger.info(f"Motor Controller ({type(MOTOR_CONTROLLER).__name__}) connected successfully.")
+        logger.info("Sending initial configuration to Motor Controller...")
+        await MOTOR_CONTROLLER.configure_spin_pwm(app_settings.get("spin_pwm_value"))
+        await MOTOR_CONTROLLER.configure_run_duration(app_settings.get("motor_on_ms"))
+    else:
+        logger.error(f"Failed to connect Motor Controller ({type(MOTOR_CONTROLLER).__name__}).")
+        if isinstance(MOTOR_CONTROLLER, ArduinoMotorController):
+            logger.info("Falling back to DummyMotorController due to Arduino connection failure.")
+            MOTOR_CONTROLLER = DummyMotorController()
+            await MOTOR_CONTROLLER.connect()
+            logger.info("DummyMotorController connected as fallback. Sending initial config.")
+            await MOTOR_CONTROLLER.configure_spin_pwm(app_settings.get("spin_pwm_value"))
+            await MOTOR_CONTROLLER.configure_run_duration(app_settings.get("motor_on_ms"))
 
 async def on_aiohttp_shutdown(app_obj):
-    global is_demo_active, video_producer_task
+    global is_demo_active, video_producer_task, MOTOR_CONTROLLER
     logger.info("Application server shutting down...")
     is_demo_active = False
     
@@ -588,17 +632,14 @@ async def on_aiohttp_shutdown(app_obj):
         if not ws_client.closed:
             await ws_client.close(code=WSCloseCode.GOING_AWAY, message='Server shutting down.')
     
-    if 'dispenser_manager_task' in app_obj and not app_obj['dispenser_manager_task'].done():
-        app_obj['dispenser_manager_task'].cancel()
-        try: await app_obj['dispenser_manager_task']
-        except asyncio.CancelledError: logger.info("Dispenser manager task cancelled during shutdown.")
-    GPIO_CONTROLLER.turn_dispenser_off()
-    logger.info("GPIO dispenser off. App cleanup complete.")
+    if MOTOR_CONTROLLER:
+        logger.info(f"Disconnecting Motor Controller ({type(MOTOR_CONTROLLER).__name__})...")
+        MOTOR_CONTROLLER.disconnect()
+        logger.info("Motor Controller disconnected.")
+    
+    logger.info("App cleanup complete.")
 
 def main():
-    if not is_el300_present(): logger.info("EL300 HW not detected. Dummy GPIO.")
-    else: logger.info("EL300 HW detected.")
-
     app = web.Application()
     app.on_startup.append(on_aiohttp_startup)
     app.on_shutdown.append(on_aiohttp_shutdown)
