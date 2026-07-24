@@ -7,6 +7,7 @@
 	<link rel="icon" type="image/png" href="/static/img/favicon.ico">
     <script src="/static/js/jquery-3.3.1.min.js"></script>
     <script src="/static/js/bootstrap.js"></script>
+    <script src="/static/js/game-landing-screen.js"></script>
     <link href="/static/css/bootstrap.min.css" rel="stylesheet">
     <link href="/static/css/all.css" rel="stylesheet"> 
     <link href="/static/css/fonts.css" rel="stylesheet">
@@ -40,6 +41,37 @@
   </head>
   <body>
 
+   <div id="splashScreen">
+    <div class="splash-frame"></div>
+
+    <div class="splash-content">
+        <h1 class="splash-title">Candy Machine Game</h1>
+
+        <button id="playGameBtn" class="splash-play-btn">
+            PLAY GAME
+        </button>
+
+        <div class="splash-disclaimer">
+
+            <div class="disclaimer-box">
+                This interactive game analyzes facial expressions in real time to trigger
+                candy rewards. No images or personal data are stored, and participation
+                is voluntary.
+            </div>
+            <a href="/static/agreement.html" class="btn agreement-btn agreement-btn:hover">
+                Read Full Agreement
+            </a>
+
+        </div>
+    </div>
+
+    <img
+    src="/static/img/hpe_intel_lockup_grn_pos_rgb.png"
+    class="splash-logo"
+    alt="HPE Element">
+</div>
+
+
     <nav class="navbar navbar-expand-md navbar-dark fixed-top bg-dark" style="top: 55px;">
         <div class="d-flex flex-grow-1">
             <img src="/static/img/element.svg" style="margin-right:20px; height: 30px;" alt="HPE Element">
@@ -50,6 +82,7 @@
             <ul class="navbar-nav ml-auto">
                 <li class="nav-item"><button type="button" id="btnStartDemo" class="btn btn-primary mr-2" title="Start/Stop Demo"><i id="btnPlayIcon" class="fas fa-play"></i> Start Demo</button></li>
                 <li class="nav-item"><button type="button" id="btnSettings" class="btn btn-secondary" data-toggle="modal" data-target="#settingsModal" title="Demo Settings" disabled><i class="fas fa-edit"></i> Settings</button></li>
+                <li class="nav-item ml-2"><button type="button" id="btnBackToHome" class="btn btn-light"><i class="fas fa-home"></i> Home</button></li>
             </ul>
         </div>
     </nav>
@@ -72,7 +105,7 @@
                 <div class="row"><div class="col"><h2>Champion Smiler</h2></div></div>
                 <div class="row align-items-center mt-1">
                     <div class="col-5 text-center"><img id="winnerImg" src="/static/img/happy_face.jpg" class="leaderboard-img high-score-img" alt="Winner"></div>
-                    <div class="col-7"><h4><span id="winnerTimeDisplay">0.0s</span></h4><div class="leaderboard-location">Discover Las Vegas</div></div>
+                    <div class="col-7"><h4><span id="winnerTimeDisplay">0.0s</span></h4><div class="leaderboard-location">Customer Innovation Center</div></div>
                 </div>
                 <hr>
                 <div class="row mt-3"><div class="col"><h2>Leaderboard</h2></div></div>
@@ -132,7 +165,7 @@
         var leaderboardSnapshotBase64 = null;
         
         var recentWinners = []; 
-        var highScore = {img: defaultUserImg, timeMs: 0, location: "Discover Las Vegas"};
+        var highScore = {img: defaultUserImg, timeMs: 0, location: "Customer Innovation Center"};
         var lastFrameTime = 0, frameCount = 0, calculatedFps = 0, fpsUpdateInterval = 1000; 
         var processingClick = false;
 
@@ -193,7 +226,7 @@
             }
 
             const newEntry = {
-                img: entryImage, time: totalScoreSec, location: "Discover Las Vegas",
+                img: entryImage, time: totalScoreSec, location: "Customer Innovation Center",
                 timeMs: totalScoreMs, newRecord: false 
             };
 
