@@ -3,6 +3,7 @@ import asyncio
 import logging
 import platform
 import serial # Ensure this is imported
+import serial.tools.list_ports
 from serial.serialutil import PortNotOpenError # For specific exception handling
 import threading
 import time
@@ -138,6 +139,22 @@ class ArduinoMotorController(MotorControllerInterface):
         self._current_spin_pwm = 100  # Default value, will be synced with Arduino
         self._current_run_duration_ms = 1000 # Default value, will be synced
         self.loop = None # To store event loop for threadsafe calls
+
+    @staticmethod
+    def get_auto_detect_com_port(device_keyword=None):
+        ports = serial.tools.list_ports.comports()
+        if not ports:
+            print(f"[INFO] No COM ports found")
+            return None
+
+        if device_keyword:
+            for port in ports:
+                if device_keyword.lower() in port.description.lower():
+                    print(f"[INFO] found Matching Device: {port.description} on {port.device}")
+                    return port.device
+
+        print(f"[INFO] Assigning First Available Port: {ports[0].description} on=> [ {ports[0].device} ]")
+        return ports[0].device
 
     async def connect(self) -> bool:
         arduino_logger.info(f"Attempting to connect to Arduino on {self.port} at {self.baud_rate} baud.")
