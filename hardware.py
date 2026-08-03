@@ -37,6 +37,11 @@ class MotorControllerInterface(ABC):
         pass
 
     @abstractmethod
+    def is_busy(self) -> bool:
+        """Returns True if the motor is currently in an activation cycle."""
+        pass
+
+    @abstractmethod
     async def configure_spin_pwm(self, pwm_value: int) -> bool:
         """Configures the motor's spin PWM (0-255). Returns True on success."""
         pass
@@ -49,9 +54,9 @@ class MotorControllerInterface(ABC):
     @abstractmethod
     async def activate_motor(self) -> bool:
         """
-        Activates the motor for one cycle using the currently stored configuration.
-        This is a blocking async call that should only return after the motor cycle is complete.
-        Returns True if the full cycle completed successfully.
+        Activates the motor in a non-blocking, fire-and-forget manner.
+        Returns True immediately if the activation command was successfully sent.
+        The motor cycle will run in the background.
         """
         pass
 
@@ -60,11 +65,11 @@ class MotorControllerInterface(ABC):
 class DummyMotorController(MotorControllerInterface):
     """
     A dummy motor controller that simulates Arduino behavior for testing without hardware.
-    Implements the MotorControllerInterface.
+    Implements the MotorControllerInterface with non-blocking activation.
     """
     def __init__(self):
         dummy_logger.info("DummyMotorController initialized.")
-        self._is_motor_active = False
+        self._is_busy = False
         self._spin_pwm = 100
         self._run_duration_ms = 2000
         self._connected = False
@@ -72,8 +77,6 @@ class DummyMotorController(MotorControllerInterface):
     async def connect(self) -> bool:
         dummy_logger.info("DummyMotorController: connect() called.")
         self._connected = True
-        dummy_logger.info("DummyMotorController: Simulated 'ARDUINO READY'")
-        dummy_logger.info(f"DummyMotorController: Defaults SPIN={self._spin_pwm} TIME={self._run_duration_ms} ms")
         return True
 
     def disconnect(self):
@@ -83,62 +86,65 @@ class DummyMotorController(MotorControllerInterface):
     def is_connected(self) -> bool:
         return self._connected
 
+    def is_busy(self) -> bool:
+        return self._is_busy
+
     async def configure_spin_pwm(self, pwm_value: int) -> bool:
-        if not self.is_connected():
-            dummy_logger.warning("DummyMotorController: Cannot configure spin, not connected.")
-            return False
+        if not self.is_connected(): return False
         self._spin_pwm = max(0, min(255, pwm_value))
         dummy_logger.info(f"DummyMotorController: Spin PWM set to {self._spin_pwm}")
-        dummy_logger.info(f"DummyMotorController: Simulated 'ACK SPIN set to {self._spin_pwm}'")
         return True
 
     async def configure_run_duration(self, duration_ms: int) -> bool:
-        if not self.is_connected():
-            dummy_logger.warning("DummyMotorController: Cannot configure duration, not connected.")
-            return False
+        if not self.is_connected(): return False
         self._run_duration_ms = max(10, min(30000, duration_ms))
         dummy_logger.info(f"DummyMotorController: Run duration set to {self._run_duration_ms}ms")
-        dummy_logger.info(f"DummyMotorController: Simulated 'ACK TIME set to {self._run_duration_ms} ms'")
         return True
+
+    async def _dummy_motor_cycle(self):
+        """The background task that simulates the motor running."""
+        self._is_busy = True
+        dummy_logger.info(f"--- DUMMY MOTOR ON (PWM: {self._spin_pwm}, Duration: {self._run_duration_ms}ms) ---")
+        try:
+            await asyncio.sleep(self._run_duration_ms / 1000.0)
+        finally:
+            self._is_busy = False
+            dummy_logger.info("--- DUMMY MOTOR OFF ---")
+            dummy_logger.info("Dummy: DONE motor cycle complete (simulated)")
 
     async def activate_motor(self) -> bool:
         if not self.is_connected():
             dummy_logger.warning("DummyMotorController: Cannot activate motor, not connected.")
             return False
-        if self._is_motor_active:
-            dummy_logger.warning("DummyMotorController: Motor already active (simulated).")
+        if self._is_busy:
+            dummy_logger.warning("DummyMotorController: Motor already busy.")
             return False
 
-        dummy_logger.info("DummyMotorController: CMD SMILE received – activating motor (simulated)")
-        dummy_logger.info(f"DummyMotorController: --- MOTOR ON (PWM: {self._spin_pwm}, Duration: {self._run_duration_ms}ms) ---")
-        self._is_motor_active = True
-        
-        await asyncio.sleep(self._run_duration_ms / 1000.0)
-        
-        self._is_motor_active = False
-        dummy_logger.info("DummyMotorController: --- MOTOR OFF (Simulated) ---")
-        dummy_logger.info("DummyMotorController: DONE motor cycle complete (simulated)")
-        return True
+        dummy_logger.info("DummyMotorController: Firing motor cycle as a background task.")
+        asyncio.create_task(self._dummy_motor_cycle())
+        return True # Return immediately
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ArduinoMotorController(MotorControllerInterface):
     """
     Controls the motor by sending serial commands to an Arduino.
-    Implements the MotorControllerInterface.
+    Implements the MotorControllerInterface with non-blocking activation.
     """
-    def __init__(self, port: str, baud_rate: int = 9600, serial_timeout: float = 0.1): # serial_timeout for read operations
+    def __init__(self, port: str, baud_rate: int = 9600, serial_timeout: float = 0.1):
         self.port = port
         self.baud_rate = baud_rate
-        self.serial_timeout_for_ops = serial_timeout # Timeout for individual read/write ops inside serial.Serial
+        self.serial_timeout_for_ops = serial_timeout
         self.serial_conn = None
         self._is_reader_active = False
         self.reader_thread = None
         self.response_queue = asyncio.Queue()
-        self.command_lock = asyncio.Lock() # Ensures one full command sequence (send+ack) at a time
-        self._current_spin_pwm = 100  # Default value, will be synced with Arduino
-        self._current_run_duration_ms = 1000 # Default value, will be synced
-        self.loop = None # To store event loop for threadsafe calls
+        self.command_lock = asyncio.Lock() # For configuration commands
+        self._activation_lock = asyncio.Lock() # Specifically for the activate_motor sequence
+        self._is_busy = False # Public flag to indicate motor cycle is active
+        self._current_spin_pwm = 100
+        self._current_run_duration_ms = 1000
+        self.loop = None
 
     @staticmethod
     def get_auto_detect_com_port(device_keyword=None):
@@ -155,34 +161,23 @@ class ArduinoMotorController(MotorControllerInterface):
 
         print(f"[INFO] Assigning First Available Port: {ports[0].description} on=> [ {ports[0].device} ]")
         return ports[0].device
-
     async def connect(self) -> bool:
         arduino_logger.info(f"Attempting to connect to Arduino on {self.port} at {self.baud_rate} baud.")
         if self.is_connected():
             arduino_logger.info("Already connected.")
             return True
-        
+
         self.loop = asyncio.get_event_loop()
 
         try:
-            serial_creator = functools.partial(
-                serial.Serial,
-                self.port,
-                self.baud_rate,
-                timeout=self.serial_timeout_for_ops
-            )
-            self.serial_conn = await self.loop.run_in_executor(
-                None,             
-                serial_creator    
-            )
-            
-            # DTR fix for CH340 chips - wrapped in executor to avoid blocking
+            serial_creator = functools.partial(serial.Serial, self.port, self.baud_rate, timeout=self.serial_timeout_for_ops)
+            self.serial_conn = await self.loop.run_in_executor(None, serial_creator)
+
             def apply_dtr_fix():
-                self.serial_conn.dtr = False   # drop DTR
-                time.sleep(0.4)               # let the MCU finish reset
+                self.serial_conn.dtr = False
+                time.sleep(0.4)
                 self.serial_conn.reset_input_buffer()
-                self.serial_conn.dtr = True    # raise DTR, start normal comms
-            
+                self.serial_conn.dtr = True
             await self.loop.run_in_executor(None, apply_dtr_fix)
 
             self._is_reader_active = True
@@ -190,324 +185,168 @@ class ArduinoMotorController(MotorControllerInterface):
             self.reader_thread.start()
             arduino_logger.info(f"Serial port {self.port} opened. Reader thread started.")
 
-            # --- MODIFIED "ARDUINO READY" LOGIC ---
-            # Try to get "ARDUINO READY" for a short period, but don't fail catastrophically if not seen.
-            # Assume it might be already running.
-            short_ready_timeout_s = 4.0  # Increased from 2.0 as suggested in your original document
-            connect_proceed_anyway_after_s = 0.5 # Time to wait for *any* serial activity before just proceeding
-            
-            start_time = time.monotonic()
-            arduino_ready_explicitly_received = False
-            initial_lines_count = 0
-
-            arduino_logger.info(f"Attempting to detect 'ARDUINO READY' for ~{short_ready_timeout_s}s...")
-            
-            # First, quickly check if any data comes through. If the port just opened and Arduino resets,
-            # messages should arrive.
-            time_waited_for_any_data = 0
-            while time_waited_for_any_data < connect_proceed_anyway_after_s:
-                if not self.response_queue.empty():
-                    break # Data is available, proceed to process it
-                await asyncio.sleep(0.05)
-                time_waited_for_any_data += 0.05
-            
-            # Now, process available data for short_ready_timeout_s
-            while (time.monotonic() - start_time) < short_ready_timeout_s:
-                try:
-                    # Poll the queue without blocking the connect method for too long per attempt
-                    response = await asyncio.wait_for(self.response_queue.get(), timeout=0.1) 
-                    arduino_logger.info(f"Arduino Connect (Initial Recv): {response}")
-                    initial_lines_count += 1
+            ready_timeout_s = 4.0
+            arduino_logger.info(f"Waiting for 'ARDUINO READY' for up to {ready_timeout_s}s...")
+            try:
+                while True: # Loop to consume startup messages
+                    response = await asyncio.wait_for(self.response_queue.get(), timeout=ready_timeout_s)
                     if "ARDUINO READY" in response:
-                        arduino_ready_explicitly_received = True
-                        arduino_logger.info(f"'ARDUINO READY' signal received from {self.port}.")
-                        # Optionally, you could break here or continue to consume other startup lines
-                        # For now, let's just note it and let the loop timeout or consume more.
-                except asyncio.TimeoutError:
-                    # No message in queue this iteration, see if overall timeout reached
-                    if (time.monotonic() - start_time) >= short_ready_timeout_s:
-                        break # Exit outer while loop
-                    # else continue, more time left
-                except Exception as e:
-                    arduino_logger.error(f"Exception during initial 'ARDUINO READY' check: {e}")
-                    break # Exit on other exceptions
+                        arduino_logger.info("'ARDUINO READY' signal received. Connection confirmed.")
+                        return True
+            except asyncio.TimeoutError:
+                arduino_logger.warning("'ARDUINO READY' not seen. Assuming it's already running. Proceeding.")
+                return True
 
-            if arduino_ready_explicitly_received:
-                arduino_logger.info(f"Arduino connection established and 'ARDUINO READY' confirmed. ({initial_lines_count} initial lines read).")
-            else:
-                arduino_logger.warning(f"'ARDUINO READY' signal not explicitly detected within ~{short_ready_timeout_s}s ({initial_lines_count} initial lines read). Assuming Arduino may already be running. Proceeding with connection.")
-            
-            # Regardless of "ARDUINO READY", if port opened and reader started, consider it "connected"
-            # The success of subsequent commands will be the real test.
-            return True 
-            # --- END OF MODIFIED "ARDUINO READY" LOGIC ---
-
-        except serial.SerialException as e:
-            arduino_logger.error(f"ArduinoMotorController: Serial connection error on {self.port}: {e}")
-            self.serial_conn = None 
-            return False
-        except Exception as e: 
-            arduino_logger.error(f"ArduinoMotorController: Unspecified error during connect: {e}", exc_info=True)
-            if self.serial_conn and self.serial_conn.is_open:
-                try: 
-                    self.serial_conn.close()
-                except: 
-                    pass 
-            self.serial_conn = None
+        except Exception as e:
+            arduino_logger.error(f"ArduinoMotorController: Error during connect: {e}", exc_info=True)
+            self.disconnect() # Ensure cleanup
             return False
 
     def disconnect(self):
         arduino_logger.info("Disconnecting from Arduino...")
-        self._is_reader_active = False # Signal reader thread to stop
+        self._is_reader_active = False
         if self.reader_thread and self.reader_thread.is_alive():
-            try:
-                self.reader_thread.join(timeout=1.0) # Wait for thread to finish
-                if self.reader_thread.is_alive():
-                    arduino_logger.warning("Reader thread did not terminate in time.")
-            except Exception as e:
-                 arduino_logger.error(f"Error joining reader thread: {e}")
+            self.reader_thread.join(timeout=1.0)
         self.reader_thread = None
-
         if self.serial_conn and self.serial_conn.is_open:
-            try:
-                self.serial_conn.close()
-                arduino_logger.info(f"Serial connection to {self.port} closed.")
-            except Exception as e:
-                arduino_logger.error(f"Error closing serial port {self.port}: {e}")
+            self.serial_conn.close()
         self.serial_conn = None
-        # Clear the queue in case of disconnect/reconnect
-        while not self.response_queue.empty():
-            try:
-                self.response_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
+        while not self.response_queue.empty(): self.response_queue.get_nowait()
         arduino_logger.info("Arduino disconnected.")
 
-
     def is_connected(self) -> bool:
-        # Check reader thread status as well, as port might be open but reader failed
-        return self.serial_conn is not None and self.serial_conn.is_open and self._is_reader_active and self.reader_thread.is_alive()
+        return self.serial_conn is not None and self.serial_conn.is_open and self._is_reader_active
 
+    def is_busy(self) -> bool:
+        return self._is_busy
 
     def _serial_reader_loop(self):
-        """Dedicated thread for reading from serial and putting lines onto an asyncio.Queue."""
-        buffer = ''
         arduino_logger.info(f"Serial reader thread started for {self.port}.")
-        try: # Add a try/except block for the whole loop for robustness
-            while self._is_reader_active:
-                if not (self.serial_conn and self.serial_conn.is_open):
-                    arduino_logger.warning("Serial connection not available in reader loop. Stopping reader.")
-                    self._is_reader_active = False
-                    break
-
-                try:
-                    # Try a direct blocking read with a timeout.
-                    # This is simpler than relying on in_waiting for initial debugging.
-                    # The timeout on serial.Serial object (self.serial_timeout_for_ops) should apply here.
-                    # If self.serial_timeout_for_ops is 0.1s, this read will block for max 0.1s if no data.
-                    
-                    # DEBUG: How many bytes are available according to in_waiting?
-                    # available_bytes = self.serial_conn.in_waiting
-                    # if available_bytes > 0:
-                    #    arduino_logger.debug(f"Reader: {available_bytes} bytes in_waiting.")
-
-                    # Attempt to read at least 1 byte, will block up to serial_timeout_for_ops
-                    # If it returns empty bytes b'', it means it timed out.
-                    raw_data = self.serial_conn.read(1) # Read 1 byte
-                    if self.serial_conn.in_waiting > 0: # If more bytes are available after reading 1
-                        raw_data += self.serial_conn.read(self.serial_conn.in_waiting) # Read the rest
-
-                    if raw_data: # If any data was read
-                        arduino_logger.debug(f"Reader RAW BYTES: {raw_data!r}") # Log raw bytes
-                        try:
-                            data_str = raw_data.decode('utf-8', errors='replace') # Use 'replace' for debugging
-                            arduino_logger.debug(f"Reader DECODED: {data_str!r}")
-                            buffer += data_str
-                            while '\n' in buffer:
-                                line, buffer = buffer.split('\n', 1)
-                                line = line.strip()
-                                arduino_logger.debug(f"Reader PARSED LINE: {line!r}")
-                                if line:
-                                    if self.loop and self.loop.is_running():
-                                        asyncio.run_coroutine_threadsafe(self.response_queue.put(line), self.loop)
-                                    else:
-                                        arduino_logger.warning("Event loop not running, cannot queue serial message. Stopping reader.")
-                                        self._is_reader_active = False
-                                        break 
-                        except UnicodeDecodeError as ude:
-                            arduino_logger.error(f"Reader UnicodeDecodeError: {ude}. Raw: {raw_data!r}")
-                    # else:
-                        # No data read in this attempt (timed out if read(1) was blocking)
-                        # arduino_logger.debug("Reader: No data from read(1) this cycle.")
-                        # The main loop has a time.sleep if we don't read, so this is fine.
-                        # However, a blocking read with timeout is better.
-
-                except serial.SerialTimeoutException: # This can happen if timeout is set and read times out
-                    arduino_logger.debug("Reader: serial.SerialTimeoutException (normal if no data).")
-                    # This is okay, means no data arrived within the read timeout
-                    pass # Continue the loop
-                except serial.SerialException as e:
-                    arduino_logger.error(f"SerialException in reader loop for {self.port}: {e}. Stopping reader.")
-                    if self.loop and self.loop.is_running():
-                        asyncio.run_coroutine_threadsafe(self.response_queue.put("SERIAL_ERROR"), self.loop)
-                    self._is_reader_active = False 
-                    break 
-                except Exception as e:
-                    arduino_logger.error(f"Unexpected exception in reader inner loop for {self.port}: {e}", exc_info=True)
-                    self._is_reader_active = False # Stop on unexpected errors too
-                    break
-                
-                if not self._is_reader_active: # Check flag again if broken from inner try
-                    break
-                
-                time.sleep(0.005) # Very short sleep to yield, but rely on read timeout mostly
-
-        except Exception as e:
-            arduino_logger.error(f"Critical error in _serial_reader_loop: {e}", exc_info=True)
-        finally:
-            arduino_logger.info(f"Serial reader thread for {self.port} finished.")
-
-
-    async def _send_command_and_wait_for_response(self, command: str, expected_prefix: str, response_timeout_s: float = 3.0) -> tuple[bool, str | None]:
-        if not self.is_connected():
-            arduino_logger.error(f"Not connected. Cannot send command: {command.strip()}")
-            return False, None
-        
-        async with self.command_lock:
+        buffer = ''
+        while self._is_reader_active:
             try:
-                # Clear any stale responses from queue that might have accumulated before this command
-                # This is a bit aggressive, but ensures we're waiting for THIS command's response
-                while not self.response_queue.empty(): self.response_queue.get_nowait()
-
-                await self.loop.run_in_executor(None, self.serial_conn.write, command.encode('utf-8'))
-                arduino_logger.debug(f"Sent to Arduino: {command.strip()}")
-
-                start_time = time.monotonic()
-                while time.monotonic() - start_time < response_timeout_s:
-                    try:
-                        response = await asyncio.wait_for(self.response_queue.get(), timeout=0.2) # Short poll on queue
-                        arduino_logger.debug(f"Recv from Arduino: {response}")
-                        
-                        if response == "SERIAL_ERROR": # Special signal from reader thread
-                            arduino_logger.error("Serial error detected by reader thread during command.")
-                            # disconnect() should be called by the part of the code that detects reader is no longer active
-                            # For now, we can signal failure.
-                            return False, "SERIAL_ERROR"
-
-                        if expected_prefix is None or response.startswith(expected_prefix): # None means any response is OK (for initial connect)
-                            return True, response
-                        else:
-                            arduino_logger.warning(f"Received unexpected response '{response}' while waiting for '{expected_prefix}'. Still waiting.")
-                    except asyncio.TimeoutError:
-                        # Timeout for self.response_queue.get(), loop continues until response_timeout_s
-                        pass 
-                    except asyncio.QueueEmpty: # Should not happen with wait_for, but good to be aware
-                        pass
-                    except Exception as e:
-                        arduino_logger.error(f"Exception while processing response queue: {e}")
-                        return False, None 
-                
-                arduino_logger.warning(f"Timeout ({response_timeout_s}s) waiting for response starting with '{expected_prefix}' after sending '{command.strip()}'.")
-                return False, None
-            except serial.SerialException as se:
-                arduino_logger.error(f"SerialException sending command '{command.strip()}': {se}")
-                # Consider calling disconnect here or letting higher level logic handle it
-                return False, None
+                if not (self.serial_conn and self.serial_conn.is_open):
+                    break
+                raw_data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                if raw_data:
+                    data_str = raw_data.decode('utf-8', errors='replace')
+                    buffer += data_str
+                    while '\n' in buffer:
+                        line, buffer = buffer.split('\n', 1)
+                        line = line.strip()
+                        if line and self.loop and self.loop.is_running():
+                            asyncio.run_coroutine_threadsafe(self.response_queue.put(line), self.loop)
+            except serial.SerialException as e:
+                arduino_logger.error(f"SerialException in reader loop for {self.port}: {e}. Stopping reader.")
+                break
             except Exception as e:
-                arduino_logger.error(f"Error sending command '{command.strip()}': {e}")
+                arduino_logger.error(f"Unexpected exception in reader loop: {e}", exc_info=True)
+                break
+            time.sleep(0.005)
+        self._is_reader_active = False
+        arduino_logger.info(f"Serial reader thread for {self.port} finished.")
+
+    async def _send_command_and_wait_for_response(self, command: str, expected_prefix: str, timeout_s: float = 3.0) -> tuple[bool, str | None]:
+        async with self.command_lock:
+            if not self.is_connected(): return False, None
+            while not self.response_queue.empty(): self.response_queue.get_nowait()
+            await self.loop.run_in_executor(None, self.serial_conn.write, command.encode('utf-8'))
+            try:
+                while True:
+                    response = await asyncio.wait_for(self.response_queue.get(), timeout=timeout_s)
+                    if response.startswith(expected_prefix): return True, response
+            except asyncio.TimeoutError:
+                arduino_logger.warning(f"Timeout waiting for '{expected_prefix}' after sending '{command.strip()}'.")
                 return False, None
 
     async def configure_spin_pwm(self, pwm_value: int) -> bool:
         self._current_spin_pwm = max(0, min(255, pwm_value))
         cmd = f"SPIN:{self._current_spin_pwm}\n"
-        expected_response = f"ACK SPIN set to {self._current_spin_pwm}"
-        success, _ = await self._send_command_and_wait_for_response(cmd, expected_response)
-        if success:
-            arduino_logger.info(f"Arduino: SPIN successfully configured to {self._current_spin_pwm}")
-        else:
-            arduino_logger.error(f"Arduino: Failed to configure SPIN to {self._current_spin_pwm}")
+        success, _ = await self._send_command_and_wait_for_response(cmd, f"ACK SPIN set to {self._current_spin_pwm}")
+        if success: arduino_logger.info(f"Arduino: SPIN successfully configured to {self._current_spin_pwm}")
         return success
 
     async def configure_run_duration(self, duration_ms: int) -> bool:
-        self._current_run_duration_ms = max(10, min(30000, duration_ms)) # Match Arduino constraints
+        self._current_run_duration_ms = max(10, min(30000, duration_ms))
         cmd = f"TIME:{self._current_run_duration_ms}\n"
-        expected_response = f"ACK TIME set to {self._current_run_duration_ms}"
-        success, _ = await self._send_command_and_wait_for_response(cmd, expected_response)
-        if success:
-            arduino_logger.info(f"Arduino: TIME successfully configured to {self._current_run_duration_ms} ms")
-        else:
-            arduino_logger.error(f"Arduino: Failed to configure TIME to {self._current_run_duration_ms} ms")
+        success, _ = await self._send_command_and_wait_for_response(cmd, f"ACK TIME set to {self._current_run_duration_ms}")
+        if success: arduino_logger.info(f"Arduino: TIME successfully configured to {self._current_run_duration_ms} ms")
         return success
 
-    async def activate_motor(self) -> bool:
-        if not self.is_connected():
-            arduino_logger.error("Arduino: Cannot activate motor, not connected.")
-            return False
-        
-        cmd = "SMILE\n"
-        arduino_logger.info("Arduino: Activating motor (sending SMILE)...")
-        
-        async with self.command_lock: # Ensure atomicity of SMILE -> CMD_ACK -> DONE sequence
-            # Clear queue before sending SMILE
-            while not self.response_queue.empty(): self.response_queue.get_nowait()
-
-            # Stage 1: Send SMILE command
-            try:
-                await self.loop.run_in_executor(None, self.serial_conn.write, cmd.encode('utf-8'))
-                arduino_logger.debug(f"Sent to Arduino: {cmd.strip()}")
-            except Exception as e:
-                arduino_logger.error(f"Arduino: Failed to send SMILE command: {e}")
-                # self.disconnect() # Potentially disconnect if send fails catastrophically
-                return False
-
-            # Stage 2: Wait for "CMD SMILE received"
+    async def _handle_motor_cycle_feedback(self):
+        """
+        Internal background task to listen for Arduino feedback during a motor cycle
+        and manage the _is_busy flag.
+        """
+        try:
+            # Stage 1: Wait for "CMD SMILE received"
             cmd_ack_received = False
-            cmd_ack_timeout_s = 3.0 
-            start_time_cmd = time.monotonic()
-            arduino_logger.info("Arduino: Waiting for 'CMD SMILE received' acknowledgment...")
-            while time.monotonic() - start_time_cmd < cmd_ack_timeout_s:
-                try:
-                    response = await asyncio.wait_for(self.response_queue.get(), timeout=0.2)
-                    arduino_logger.debug(f"Arduino Recv (awaiting CMD_ACK): {response}")
-                    if response == "SERIAL_ERROR":
-                        arduino_logger.error("Serial error while waiting for CMD_ACK.")
-                        return False # Reader thread signaled error, connection is likely dead
+            cmd_ack_timeout_s = 3.0
+            try:
+                while True: # Loop to find the right message
+                    response = await asyncio.wait_for(self.response_queue.get(), timeout=cmd_ack_timeout_s)
                     if response.startswith("CMD SMILE received"):
-                        arduino_logger.info("Arduino: 'CMD SMILE received' acknowledgment OK.")
+                        arduino_logger.info("BG Task: 'CMD SMILE received' acknowledgment OK.")
                         cmd_ack_received = True
                         break
-                except asyncio.TimeoutError:
-                    continue # Continue polling queue until cmd_ack_timeout_s
-            
-            if not cmd_ack_received:
-                arduino_logger.error(f"Arduino: Timeout ({cmd_ack_timeout_s}s) waiting for 'CMD SMILE received' acknowledgment.")
-                return False
+            except asyncio.TimeoutError:
+                arduino_logger.error(f"BG Task: Timeout ({cmd_ack_timeout_s}s) waiting for 'CMD SMILE received'.")
+                return # Exits the background task
 
-            # Stage 3: Wait for "DONE motor cycle complete"
+            if not cmd_ack_received: return # Should be unreachable, but safe
+
+            # Stage 2: Wait for "DONE motor cycle complete"
             done_received = False
-            # Timeout for DONE should be slightly more than the motor run duration + buffer for serial comms
-            done_timeout_s = (self._current_run_duration_ms / 1000.0) + 5.0 # Add 5s buffer
-            start_time_done = time.monotonic()
-            arduino_logger.info(f"Arduino: Waiting for 'DONE motor cycle complete' (timeout: {done_timeout_s:.1f}s). Motor should run for {self._current_run_duration_ms / 1000.0:.1f}s.")
-            
-            while time.monotonic() - start_time_done < done_timeout_s:
-                try:
-                    response = await asyncio.wait_for(self.response_queue.get(), timeout=0.2)
-                    arduino_logger.debug(f"Arduino Recv (awaiting DONE): {response}")
-                    if response == "SERIAL_ERROR":
-                        arduino_logger.error("Serial error while waiting for DONE.")
-                        return False
+            done_timeout_s = (self._current_run_duration_ms / 1000.0) + 5.0 # Motor duration + 5s buffer
+            try:
+                while True:
+                    response = await asyncio.wait_for(self.response_queue.get(), timeout=done_timeout_s)
                     if response.startswith("DONE motor cycle complete"):
-                        arduino_logger.info("Arduino: Motor cycle complete ('DONE' received).")
+                        arduino_logger.info("BG Task: Motor cycle complete ('DONE' received).")
                         done_received = True
                         break
-                except asyncio.TimeoutError:
-                    continue # Continue polling queue until done_timeout_s
-            
-            if not done_received:
-                arduino_logger.warning(f"Arduino: Timeout ({done_timeout_s}s) waiting for 'DONE motor cycle complete'. Motor might have run, but confirmation missing.")
-                # Depending on strictness, you might return False or True with a warning.
-                # For now, if DONE is not received, consider it a failure of the full cycle.
+            except asyncio.TimeoutError:
+                arduino_logger.warning(f"BG Task: Timeout ({done_timeout_s:.1f}s) waiting for 'DONE'. Confirmation missing.")
+
+        finally:
+            # This is crucial: no matter what happens, un-set the busy flag
+            self._is_busy = False
+            arduino_logger.info("BG Task: Cycle finished. Motor is no longer busy.")
+
+    async def activate_motor(self) -> bool:
+        """
+        Non-blocking motor activation. Sends command, starts a background feedback listener,
+        and returns immediately.
+        """
+        async with self._activation_lock: # Ensure this check-and-set is atomic
+            if not self.is_connected():
+                arduino_logger.error("Arduino: Cannot activate motor, not connected.")
                 return False
-            
-            return True # Both CMD_ACK and DONE were received
+            if self._is_busy:
+                arduino_logger.warning("Arduino: Cannot activate motor, already busy.")
+                return False
+
+            # Set busy flag immediately
+            self._is_busy = True
+
+        # If we get here, we are clear to send the command
+        try:
+            # Clear any old messages from queue before sending
+            while not self.response_queue.empty(): self.response_queue.get_nowait()
+
+            # Send the command
+            cmd = "SMILE\n"
+            await self.loop.run_in_executor(None, self.serial_conn.write, cmd.encode('utf-8'))
+            arduino_logger.info(f"Sent '{cmd.strip()}' to Arduino. Firing background listener.")
+
+            # Start the background task to handle feedback and reset the busy flag
+            asyncio.create_task(self._handle_motor_cycle_feedback())
+
+            # Return True immediately to unblock the main application
+            return True
+
+        except Exception as e:
+            arduino_logger.error(f"Arduino: Failed to send SMILE command: {e}")
+            # If sending failed, we must reset the busy flag we just set
+            self._is_busy = False
+            return False

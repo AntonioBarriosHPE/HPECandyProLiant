@@ -2,3 +2,96 @@
 body {
   padding-top: 3.5rem;
 }
+
+/* game-prompt bar directly above the camera frame */
+#gameStatusBar {
+    font-weight: 600;
+    font-size: 1.15rem;         /* bigger than body, smaller than h4 */
+}
+
+/* champion-smiler card - FORCE STACKING ON SMALLER SCREENS */
+#championRow {
+    align-items: center;
+}
+
+/* Force the image column to be smaller and responsive */
+#championRow .col-5 {
+    flex: 0 0 auto;             /* Don't grow/shrink */
+    width: auto;                /* Override Bootstrap width */
+    max-width: 150px;           /* Limit maximum width */
+    min-width: 100px;           /* Ensure minimum width */
+}
+
+/* Force the text column to take remaining space */
+#championRow .col-7 {
+    flex: 1 1 auto;             /* Take remaining space */
+    width: auto;                /* Override Bootstrap width */
+    min-width: 0;               /* Allow text to wrap/ellipsis */
+    padding-left: 15px;         /* Space between image and text */
+}
+
+/* Champion image styling */
+.high-score-img {
+    width: 120px;
+    height: 120px;
+    max-width: 100%;            /* Don't exceed container */
+    object-fit: cover;
+    display: block;
+    margin: 0 auto;             /* Center in container */
+}
+
+/* Winner text styling */
+#winnerText h4,
+#winnerText .leaderboard-location {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin: 0;
+}
+
+#winnerText h4 {
+    margin-bottom: 5px;
+}
+
+/* CRITICAL: Override Bootstrap on smaller screens */
+@media (max-width: 1024px) {
+    #championRow {
+        flex-direction: column !important;  /* Force vertical stacking */
+        text-align: center;
+    }
+
+    #championRow .col-5,
+    #championRow .col-7 {
+        flex: none !important;              /* Reset flex */
+        width: 100% !important;             /* Full width */
+        max-width: none !important;         /* Remove max-width */
+        padding-left: 15px !important;      /* Reset Bootstrap padding */
+        padding-right: 15px !important;
+    }
+
+    .high-score-img {
+        width: 100px;
+        height: 100px;
+        margin-bottom: 10px;
+    }
+
+    #winnerText {
+        padding-left: 0 !important;         /* No left padding when stacked */
+        text-align: center;
+    }
+}
+
+@media (max-width: 768px) {
+    .high-score-img {
+        width: 80px;
+        height: 80px;
+    }
+
+    #winnerText h4 {
+        font-size: 1.1rem;
+    }
+
+    .leaderboard-location {
+        font-size: 0.85rem;
+    }
+}
