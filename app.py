@@ -14,8 +14,7 @@ import random
 from enum import Enum
 from collections import deque
 
-#from openvino.runtime import Core
-import openvino as ov
+from openvino.runtime import Core
 from aiohttp import web, WSCloseCode
 import cv2
 from PIL import Image
@@ -127,7 +126,7 @@ def initialize_openvino_models():
     models_initialized_successfully = False # Reset flag at start of initialization
     logger.info("Initializing OpenVINO Core and models...")
     try:
-        ie_core = ov.Core()
+        ie_core = Core()
         logger.info(f"Available OpenVINO devices: {ie_core.available_devices}")
 
         if not FACE_DETECTION_MODEL_XML.exists():
