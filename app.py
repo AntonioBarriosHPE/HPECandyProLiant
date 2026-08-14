@@ -14,7 +14,7 @@ import random
 from enum import Enum
 from collections import deque
 
-from openvino.runtime import Core
+import openvino as ov
 from aiohttp import web, WSCloseCode
 import cv2
 from PIL import Image
@@ -25,7 +25,7 @@ from hardware import MotorControllerInterface, ArduinoMotorController, DummyMoto
 
 # --- Configuration & Globals ---
 HTTP_HOST = "127.0.0.1"
-HTTP_PORT = 9008
+HTTP_PORT = 9003
 WEBSOCKET_PATH = "/ws"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 MODEL_IR_BASE_PATH = SCRIPT_DIR / "openvino_models" / "ir" / "public"
@@ -35,7 +35,7 @@ FACE_DETECTION_MODEL_XML = MODEL_IR_BASE_PATH / "face-detection-adas-0001/FP32/f
 EMOTION_RECOGNITION_MODEL_XML = MODEL_IR_BASE_PATH / "emotions-recognition-retail-0003/FP32/emotions-recognition-retail-0003.xml"
 
 # Arduino Configuration - SET YOUR PORT HERE or use None for Dummy
-ARDUINO_SERIAL_PORT = ArduinoMotorController.get_auto_detect_com_port()
+ARDUINO_SERIAL_PORT = "COM5"#ArduinoMotorController.get_auto_detect_com_port()
 # ARDUINO_SERIAL_PORT = None # To force dummy controller
 ARDUINO_BAUD_RATE = 9600
 
@@ -126,7 +126,7 @@ def initialize_openvino_models():
     models_initialized_successfully = False # Reset flag at start of initialization
     logger.info("Initializing OpenVINO Core and models...")
     try:
-        ie_core = Core()
+        ie_core = ov.Core()
         logger.info(f"Available OpenVINO devices: {ie_core.available_devices}")
 
         if not FACE_DETECTION_MODEL_XML.exists():

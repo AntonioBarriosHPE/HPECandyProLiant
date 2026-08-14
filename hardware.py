@@ -147,20 +147,59 @@ class ArduinoMotorController(MotorControllerInterface):
         self.loop = None
 
     @staticmethod
-    def get_auto_detect_com_port(device_keyword=None):
-        ports = serial.tools.list_ports.comports()
+    def get_auto_detect_com_port(device_keyword="arduino"):
+        ports = list(serial.tools.list_ports.comports())
         if not ports:
-            print(f"[INFO] No COM ports found")
+            print("[ERROR] No physical COM ports found on this system.")
             return None
 
-        if device_keyword:
-            for port in ports:
-                if device_keyword.lower() in port.description.lower():
-                    print(f"[INFO] found Matching Device: {port.description} on {port.device}")
-                    return port.device
+        valid_candidates = []
 
-        print(f"[INFO] Assigning First Available Port: {ports[0].description} on=> [ {ports[0].device} ]")
-        return ports[0].device
+        # Step 1: Scan descriptions, hardware IDs, and manufacturer details
+        for port in ports:
+            # Check description, hardware ID string, and manufacturer details
+            desc = (port.description or "").lower()
+            hwid = (port.hwid or "").lower()
+            mfg = getattr(port, 'manufacturer', '') or ""
+            mfg = mfg.lower()
+            
+            # Print everything found to help you debug in your Python log files
+            print(f"[DEBUG] Found Port: {port.device} | Desc: {port.description} | MFG: {port.manufacturer}")
+
+            # Match explicitly specified keywords or standard microcontroller hardware flags
+            is_match = (
+                (device_keyword and device_keyword.lower() in desc) or
+                (device_keyword and device_keyword.lower() in mfg) or
+                "usb-serial" in desc or 
+                "ch340" in desc or       # Common cheap clone chips
+                "cp210" in desc or       # NodeMCU / ESP8266 chips
+                "ftdi" in desc           # Official FTDI chips
+            )
+            
+            if is_match:
+                valid_candidates.append(port.device)
+
+        # Fallback: if no keyword matched, test all system ports instead of blinding grabbing index 0
+        if not valid_candidates:
+            print("[WARN] No obvious microcontroller found by keyword. Testing all available ports...")
+            valid_candidates = [p.device for p in ports]
+
+        # Step 2: Actively test connection stability on candidates (No more blind index selection!)
+        for device_path in valid_candidates:
+            try:
+                # Try opening the port with a short timeout to see if it responds or is already blocked
+                test_serial = serial.Serial(device_path, baudrate=9600, timeout=1)
+                time.sleep(1)  # Allow Arduino a moment to toggle DTR/reset
+                test_serial.close()
+                
+                print(f"[SUCCESS] Found working and responsive COM Port: [ {device_path} ]")
+                return device_path
+            except (serial.SerialException, OSError) as e:
+                print(f"[INFO] Skipping {device_path}: Port is busy, locked, or unresponsive. ({str(e)})")
+
+        print("[ERROR] Could not find any free, working COM ports to communicate with.")
+        return None
+
     async def connect(self) -> bool:
         arduino_logger.info(f"Attempting to connect to Arduino on {self.port} at {self.baud_rate} baud.")
         if self.is_connected():
