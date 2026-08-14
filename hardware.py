@@ -162,7 +162,7 @@ class ArduinoMotorController(MotorControllerInterface):
             hwid = (port.hwid or "").lower()
             mfg = getattr(port, 'manufacturer', '') or ""
             mfg = mfg.lower()
-            
+
             # Print everything found to help you debug in your Python log files
             print(f"[DEBUG] Found Port: {port.device} | Desc: {port.description} | MFG: {port.manufacturer}")
 
@@ -170,12 +170,12 @@ class ArduinoMotorController(MotorControllerInterface):
             is_match = (
                 (device_keyword and device_keyword.lower() in desc) or
                 (device_keyword and device_keyword.lower() in mfg) or
-                "usb-serial" in desc or 
+                "usb-serial" in desc or
                 "ch340" in desc or       # Common cheap clone chips
                 "cp210" in desc or       # NodeMCU / ESP8266 chips
                 "ftdi" in desc           # Official FTDI chips
             )
-            
+
             if is_match:
                 valid_candidates.append(port.device)
 
@@ -191,7 +191,7 @@ class ArduinoMotorController(MotorControllerInterface):
                 test_serial = serial.Serial(device_path, baudrate=9600, timeout=1)
                 time.sleep(1)  # Allow Arduino a moment to toggle DTR/reset
                 test_serial.close()
-                
+
                 print(f"[SUCCESS] Found working and responsive COM Port: [ {device_path} ]")
                 return device_path
             except (serial.SerialException, OSError) as e:
