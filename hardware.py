@@ -147,7 +147,7 @@ class ArduinoMotorController(MotorControllerInterface):
         self.loop = None
 
     @staticmethod
-    def get_auto_detect_com_port(device_keyword="arduino"):
+    def get_auto_detect_com_port(device_keyword=None):
         ports = list(serial.tools.list_ports.comports())
         if not ports:
             print("[ERROR] No physical COM ports found on this system.")
