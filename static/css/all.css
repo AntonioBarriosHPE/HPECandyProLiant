@@ -4340,6 +4340,12 @@ readers do not read off random characters that represent icons */
     align-items: center;
 
     background-image: url("/static/img/dark_background_dynamic_element.png");
+
+    background-size: cover;
+
+    background-position: center;
+
+    background-repeat: no-repeat;
 }
 
 .splash-content {
@@ -4439,4 +4445,25 @@ readers do not read off random characters that represent icons */
     margin: 0 auto;
 
     padding: 12px 18px;
+}
+
+#videoContainer{
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  background-color: #222;
+  overflow: hidden;
+
+  display: flex;
+  justify-content: center;
+  align-items: center;
+
+}
+
+#videoElement{
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
 }
