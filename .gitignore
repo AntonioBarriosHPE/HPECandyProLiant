@@ -182,3 +182,7 @@ cython_debug/
 
 # Development files
 *.dev.*
+
+# Candy Machine runtime artifacts
+Logs/
+candy-machine.pid
