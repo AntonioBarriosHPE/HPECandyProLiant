@@ -497,14 +497,11 @@
                 btnStartDemo.prop('disabled', false);
                 btnSettings.prop('disabled', false);
 
-                console.log("JS: Auto-starting demo on WebSocket open.");
-                ws.send(JSON.stringify({command:"start_demo"}));
-
-                videoStatus.text("Status: Starting demo...");
-                btnStartDemo.removeClass("btn-primary").addClass("btn-success")
-                    .find("i").removeClass("fa-play").addClass("fa-stop").end()
-                    .contents().last().text(" Stop Demo");
-                isDemoRunning = true;
+                // Camera stays closed until the user presses Start Demo.
+                isDemoRunning = false;
+                btnStartDemo.removeClass("btn-success").addClass("btn-primary")
+                    .find("i").removeClass("fa-stop").addClass("fa-play").end()
+                    .contents().last().text(" Start Demo");
                 leaderboardSnapshotBase64 = null;
                 initialCandyDispensedThisStreak = false;
             };
