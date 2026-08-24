@@ -34,20 +34,38 @@ function Stop-PreviousCandyProcess {
 	Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
 }
 
+function Resolve-GitCommand {
+	# Git is often installed but absent from PATH in a freshly provisioned shell.
+	if (Get-Command "git" -ErrorAction SilentlyContinue) { return "git" }
+
+	$CommonGitPaths = @(
+		"C:\Program Files\Git\cmd\git.exe",
+		"C:\Program Files (x86)\Git\cmd\git.exe",
+		"$env:LOCALAPPDATA\Programs\Git\cmd\git.exe"
+	)
+	foreach ($Path in $CommonGitPaths) {
+		if (Test-Path $Path) { return $Path }
+	}
+	return $null
+}
+
 function Update-ApplicationCode {
 	if ($SkipUpdate) {
 		Write-Output "Code update check skipped by -SkipUpdate."
 		return
 	}
 
-	if (-not (Get-Command "git" -ErrorAction SilentlyContinue)) {
-		throw "Git is required to check for application updates."
+	$GitCmd = Resolve-GitCommand
+	if (-not $GitCmd) {
+		Write-Warning "Skipping update: Git was not found. Install it from https://git-scm.com to enable updates."
+		return
 	}
 
-	$CurrentCommit = (& git -C $ProjectRoot rev-parse HEAD 2>$null).Trim()
-	$RemoteCommit = (& git ls-remote $RepoUrl "refs/heads/main" 2>$null).Split()[0]
+	$CurrentCommit = (& $GitCmd -C $ProjectRoot rev-parse HEAD 2>$null).Trim()
+	$RemoteCommit = (& $GitCmd ls-remote $RepoUrl "refs/heads/$UpdateBranch" 2>$null).Split()[0]
 	if (-not $CurrentCommit -or -not $RemoteCommit) {
-		throw "Could not determine the local or remote Git commit."
+		Write-Warning "Skipping update: could not determine the local or remote commit for branch '$UpdateBranch'."
+		return
 	}
 
 	if ($CurrentCommit -eq $RemoteCommit) {
@@ -55,16 +73,18 @@ function Update-ApplicationCode {
 		return
 	}
 
-	$TrackedChanges = & git -C $ProjectRoot status --porcelain --untracked-files=no
+	$TrackedChanges = & $GitCmd -C $ProjectRoot status --porcelain --untracked-files=no
 	if ($TrackedChanges) {
-		throw "Application update stopped because tracked local changes exist. Commit or revert them before updating."
+		# Local edits win over the remote copy, but they shouldn't block launching.
+		Write-Warning "Skipping update: uncommitted local changes exist. Commit or revert them to resume updating."
+		return
 	}
 
 	$TempDir = Join-Path $env:TEMP ("HPECandyProLiant_" + [Guid]::NewGuid().ToString())
 	try {
-		Write-Output "Update available: $CurrentCommit -> $RemoteCommit"
+		Write-Output "Update available on '$UpdateBranch': $CurrentCommit -> $RemoteCommit"
 		New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
-		$Clone = Start-Process -FilePath "git" -ArgumentList @("clone", "--depth", "1", "--branch", "main", $RepoUrl, $TempDir) -NoNewWindow -Wait -PassThru
+		$Clone = Start-Process -FilePath $GitCmd -ArgumentList @("clone", "--depth", "1", "--branch", $UpdateBranch, $RepoUrl, $TempDir) -NoNewWindow -Wait -PassThru
 		if ($Clone.ExitCode -ne 0) {
 			throw "Git clone failed with exit code $($Clone.ExitCode)."
 		}
