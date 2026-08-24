@@ -667,6 +667,9 @@ async def video_stream_producer_loop():
         with suppress(asyncio.CancelledError):
             if cap:
                 cap.release()
+                # Blocking on purpose: stop_demo awaits this task, so the delay guarantees
+                # Windows frees the DSHOW device before a restart tries to reopen it.
+                time.sleep(0.4)
                 logger.info("Webcam released in producer's finally block.")
 
             reset_game_completely()

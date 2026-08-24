@@ -474,7 +474,6 @@
         }
 
         function handleDemoStoppedLocally() {
-            if (!isDemoRunning) return;
             console.log("JS: Forcing UI reset (handleDemoStoppedLocally).");
             isDemoRunning = false;
             btnStartDemo.prop('disabled', false).removeClass("btn-success btn-danger").addClass("btn-primary")
@@ -509,6 +508,8 @@
 
             ws.onmessage = function(evt) {
                 if (evt.data instanceof ArrayBuffer) {
+                    // Frames flowing means the start succeeded, so allow Stop again.
+                    if (btnStartDemo.prop('disabled')) { btnStartDemo.prop('disabled', false); }
                     if (lastObjectURL) { URL.revokeObjectURL(lastObjectURL); }
                     const blob = new Blob([evt.data], {type: 'image/jpeg'});
                     lastObjectURL = URL.createObjectURL(blob);
@@ -611,6 +612,9 @@
             processingClick = true;
             var command = isDemoRunning ? "stop_demo" : "start_demo";
             ws.send(JSON.stringify({ command: command }));
+
+            // Stay disabled until the server confirms, so the camera is never torn down mid-open.
+            btnStartDemo.prop('disabled', true);
 
             if (isDemoRunning) { // If it was running, we are stopping it
                 videoStatus.text("Status: Stopping demo...");
