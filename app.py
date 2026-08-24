@@ -26,15 +26,27 @@ from contextlib import suppress
 from hardware import MotorControllerInterface, ArduinoMotorController, DummyMotorController
 
 # --- Configuration & Globals ---
-HTTP_HOST = "127.0.0.1"
-HTTP_PORT = 9000
+HTTP_HOST = os.getenv("CANDY_HTTP_HOST", "127.0.0.1")
+HTTP_PORT = int(os.getenv("CANDY_HTTP_PORT", "9000"))
 WEBSOCKET_PATH = "/ws"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 MODEL_IR_BASE_PATH = SCRIPT_DIR / "openvino_models" / "ir" / "public"
 STATIC_FILES_PATH = SCRIPT_DIR / "static"
 
-FACE_DETECTION_MODEL_XML = MODEL_IR_BASE_PATH / "face-detection-adas-0001/FP32/face-detection-adas-0001.xml"
-EMOTION_RECOGNITION_MODEL_XML = MODEL_IR_BASE_PATH / "emotions-recognition-retail-0003/FP32/emotions-recognition-retail-0003.xml"
+# Performance tuning. Precision/device are auto-selected per host at startup; env vars override.
+MODEL_PRECISION_OVERRIDE = os.getenv("CANDY_MODEL_PRECISION")
+OPENVINO_DEVICE_OVERRIDE = os.getenv("CANDY_OV_DEVICE")
+MODEL_PRECISION = None
+OPENVINO_DEVICE = None
+FACE_DETECTION_MODEL_XML = None
+EMOTION_RECOGNITION_MODEL_XML = None
+CAMERA_WIDTH = int(os.getenv("CANDY_CAM_WIDTH", "1280"))
+CAMERA_HEIGHT = int(os.getenv("CANDY_CAM_HEIGHT", "720"))
+FRAME_SLEEP_S = float(os.getenv("CANDY_FRAME_SLEEP_S", "0"))
+
+def resolve_model_xml(model_dir_name, file_name):
+    candidate = MODEL_IR_BASE_PATH / model_dir_name / MODEL_PRECISION / file_name
+    return candidate if candidate.exists() else MODEL_IR_BASE_PATH / model_dir_name / "FP32" / file_name
 
 # Arduino Configuration - SET YOUR PORT HERE or use None for Dummy
 ARDUINO_SERIAL_PORT = ArduinoMotorController.get_auto_detect_com_port()
@@ -111,6 +123,34 @@ logger = logging.getLogger("hpe_candy_proliant")
 logging.getLogger("hpe_candy_proliant.dummy_motor").setLevel(logging.INFO)
 logging.getLogger("hpe_candy_proliant.arduino_motor").setLevel(logging.INFO)
 
+# --- Pipeline performance tracking ---
+PERF_LOG_INTERVAL_S = 5.0
+PERF_STAGES = ("capture", "detect", "emotion", "encode", "broadcast", "total")
+perf_samples = {stage: deque(maxlen=300) for stage in PERF_STAGES}
+
+def log_perf_summary():
+    if not perf_samples["total"]:
+        return
+
+    def avg_p95_ms(values):
+        ordered = sorted(values)
+        avg_ms = sum(ordered) / len(ordered) * 1000
+        p95_ms = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))] * 1000
+        return avg_ms, p95_ms
+
+    avg_total, p95_total = avg_p95_ms(perf_samples["total"])
+    stage_parts = []
+    for stage in PERF_STAGES[:-1]:
+        if perf_samples[stage]:
+            avg_stage, p95_stage = avg_p95_ms(perf_samples[stage])
+            stage_parts.append(f"{stage} {avg_stage:.1f}/{p95_stage:.1f}ms")
+
+    fps = 1000 / avg_total if avg_total else 0
+    logger.info(
+        f"PERF fps={fps:.1f} frame={avg_total:.1f}/{p95_total:.1f}ms (avg/p95) | "
+        + " | ".join(stage_parts)
+    )
+
 # OpenVINO Globals
 ie_core = None
 face_detection_net = None
@@ -124,12 +164,21 @@ models_initialized_successfully = False
 def initialize_openvino_models():
     global ie_core, face_detection_net, face_detection_exec_net, emotion_net, emotion_exec_net
     global face_det_input_shape_nchw, emotion_input_shape_nchw, models_initialized_successfully
+    global MODEL_PRECISION, OPENVINO_DEVICE, FACE_DETECTION_MODEL_XML, EMOTION_RECOGNITION_MODEL_XML
 
     models_initialized_successfully = False # Reset flag at start of initialization
     logger.info("Initializing OpenVINO Core and models...")
     try:
         ie_core = ov.Core()
         logger.info(f"Available OpenVINO devices: {ie_core.available_devices}")
+
+        # FP16 only pays off on GPU; CPU-only hosts (e.g. Xeon servers) need INT8 instead.
+        has_gpu = "GPU" in ie_core.available_devices
+        MODEL_PRECISION = MODEL_PRECISION_OVERRIDE or ("FP16" if has_gpu else "FP16-INT8")
+        OPENVINO_DEVICE = OPENVINO_DEVICE_OVERRIDE or ("AUTO:GPU,CPU" if has_gpu else "CPU")
+        FACE_DETECTION_MODEL_XML = resolve_model_xml("face-detection-adas-0001", "face-detection-adas-0001.xml")
+        EMOTION_RECOGNITION_MODEL_XML = resolve_model_xml("emotions-recognition-retail-0003", "emotions-recognition-retail-0003.xml")
+        logger.info(f"Selected precision {MODEL_PRECISION} on device {OPENVINO_DEVICE}.")
 
         if not FACE_DETECTION_MODEL_XML.exists():
             logger.error(f"Face Detection model XML file not found: {FACE_DETECTION_MODEL_XML}")
@@ -144,16 +193,17 @@ def initialize_openvino_models():
         n, c, h, w = map(int, fd_input_layer.shape)
         face_det_input_shape_nchw = {'n': n, 'c': c, 'h': h, 'w': w}
         # Compile model for AUTO device selection (CPU, iGPU, etc.)
-        face_detection_exec_net = ie_core.compile_model(model=face_detection_net, device_name="AUTO")
-        logger.info(f"Face Detection model compiled. Requested device: AUTO. Input Shape (NCHW): {face_det_input_shape_nchw}")
+        # Real-time single-stream workload: LATENCY beats the AUTO plugin's throughput default.
+        face_detection_exec_net = ie_core.compile_model(model=face_detection_net, device_name=OPENVINO_DEVICE, config={"PERFORMANCE_HINT": "LATENCY"})
+        logger.info(f"Face Detection model compiled. Requested device: {OPENVINO_DEVICE}. Input Shape (NCHW): {face_det_input_shape_nchw}")
 
         logger.info(f"Loading Emotion Recognition model from: {EMOTION_RECOGNITION_MODEL_XML}")
         emotion_net = ie_core.read_model(model=str(EMOTION_RECOGNITION_MODEL_XML))
         em_input_layer = emotion_net.input(0)
         n_em, c_em, h_em, w_em = map(int, em_input_layer.shape)
         emotion_input_shape_nchw = {'n': n_em, 'c': c_em, 'h': h_em, 'w': w_em}
-        emotion_exec_net = ie_core.compile_model(model=emotion_net, device_name="AUTO")
-        logger.info(f"Emotion Recognition model compiled. Requested device: AUTO. Input Shape (NCHW): {emotion_input_shape_nchw}")
+        emotion_exec_net = ie_core.compile_model(model=emotion_net, device_name=OPENVINO_DEVICE, config={"PERFORMANCE_HINT": "LATENCY"})
+        logger.info(f"Emotion Recognition model compiled. Requested device: {OPENVINO_DEVICE}. Input Shape (NCHW): {emotion_input_shape_nchw}")
 
         models_initialized_successfully = True
         logger.info("OpenVINO models initialized successfully.")
@@ -396,12 +446,16 @@ async def video_stream_producer_loop():
                         logger.info(f"Camera Index {cam_idx} ({backend_name}) opened successfully.")
                         # Set desired properties, check if they were applied
                         if platform.system() != "Darwin": cap_instance.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                        cap_instance.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                        cap_instance.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap_instance.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                        cap_instance.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
                         cap_instance.set(cv2.CAP_PROP_FPS, 30)
 
                         ret_read, _ = cap_instance.read() # Test read a frame
                         if ret_read:
+                            # DSHOW cameras return dark frames until auto-exposure settles.
+                            for _ in range(10):
+                                cap_instance.read()
+                                time.sleep(0.05)
                             logger.info(f"Successfully read a test frame from Camera Index {cam_idx} (backend: {backend_name}). Using this camera.")
                             cap = cap_instance
                             break
@@ -421,6 +475,7 @@ async def video_stream_producer_loop():
         face_model_h = face_det_input_shape_nchw['h']
         face_model_w = face_det_input_shape_nchw['w']
         first_frame_sent_this_session = False
+        last_perf_log_s = time.perf_counter()
 
         while is_demo_active:
             current_time_ms = int(time.time() * 1000)
@@ -436,15 +491,19 @@ async def video_stream_producer_loop():
                     reset_game_completely()
                     current_game_state = GameState.INITIAL_SMILE
 
+            frame_start_s = time.perf_counter()
             ret, original_frame_hwc = cap.read()
+            perf_samples["capture"].append(time.perf_counter() - frame_start_s)
             if not ret or original_frame_hwc is None:
                 logger.warning("Failed to grab frame from webcam.")
                 await asyncio.sleep(0.05)
                 continue
 
             # --- AI Processing ---
+            detect_start_s = time.perf_counter()
             frame_for_face_det_nchw, frame_resized_for_face_det_hwc = preprocess_frame_face_detection(original_frame_hwc)
             detected_faces = detect_faces_from_input_frame(frame_for_face_det_nchw) if frame_for_face_det_nchw is not None else []
+            perf_samples["detect"].append(time.perf_counter() - detect_start_s)
 
             raw_detected_emotion_this_frame = None
             current_face_roi_for_snapshot_hwc_original_scale = None
@@ -462,7 +521,9 @@ async def video_stream_producer_loop():
 
                 if fx_m < fx2_m and fy_m < fy2_m and frame_resized_for_face_det_hwc is not None:
                     roi_for_emotion_resized = frame_resized_for_face_det_hwc[fy_m:fy2_m, fx_m:fx2_m]
+                    emotion_start_s = time.perf_counter()
                     raw_detected_emotion_this_frame, _ = recognize_emotion(roi_for_emotion_resized)
+                    perf_samples["emotion"].append(time.perf_counter() - emotion_start_s)
 
             # --- Emotion Smoothing Logic ---
             emotion_history.append(raw_detected_emotion_this_frame) if raw_detected_emotion_this_frame else emotion_history.clear() if not detected_faces else None
@@ -573,14 +634,28 @@ async def video_stream_producer_loop():
                 "game_over_reset_timer_s": (max(0, GAME_OVER_RESET_DELAY_S - (current_time_s - game_over_display_start_time_s)) if current_game_state == GameState.GAME_OVER else -1),
                 "ready": ready_signal_for_this_frame
             }
+            broadcast_start_s = time.perf_counter()
             await broadcast(status_payload)
+            broadcast_elapsed_s = time.perf_counter() - broadcast_start_s
 
             # NEW: Encode and broadcast frame as binary data
+            encode_start_s = time.perf_counter()
             ok, buf = cv2.imencode('.jpg', output_frame_hwc, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            perf_samples["encode"].append(time.perf_counter() - encode_start_s)
             if ok:
+                frame_broadcast_start_s = time.perf_counter()
                 await broadcast_frame(memoryview(buf))
+                broadcast_elapsed_s += time.perf_counter() - frame_broadcast_start_s
 
-            await asyncio.sleep(0.015)
+            perf_samples["broadcast"].append(broadcast_elapsed_s)
+            perf_samples["total"].append(time.perf_counter() - frame_start_s)
+
+            if (time.perf_counter() - last_perf_log_s) >= PERF_LOG_INTERVAL_S:
+                log_perf_summary()
+                last_perf_log_s = time.perf_counter()
+
+            # sleep(0) still yields to the event loop when no clients are connected.
+            await asyncio.sleep(FRAME_SLEEP_S)
 
     except asyncio.CancelledError:
         logger.info("Video stream producer loop was cancelled (expected).")
