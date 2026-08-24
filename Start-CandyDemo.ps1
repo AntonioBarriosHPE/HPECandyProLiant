@@ -2,6 +2,7 @@ param(
 	[switch]$SkipUpdate,
 	# Deployments running a feature branch must track that branch, not main.
 	[string]$UpdateBranch = $(if ($env:CANDY_UPDATE_BRANCH) { $env:CANDY_UPDATE_BRANCH } else { "main" })
+	[switch]$SkipUpdate
 )
 
 # Resolve paths from this script so it works from any checkout location.
