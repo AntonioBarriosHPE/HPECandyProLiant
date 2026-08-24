@@ -1,5 +1,7 @@
 param(
-	[switch]$SkipUpdate
+	[switch]$SkipUpdate,
+	# Deployments running a feature branch must track that branch, not main.
+	[string]$UpdateBranch = $(if ($env:CANDY_UPDATE_BRANCH) { $env:CANDY_UPDATE_BRANCH } else { "main" })
 )
 
 # Resolve paths from this script so it works from any checkout location.
@@ -42,9 +44,9 @@ function Update-ApplicationCode {
 	}
 
 	$CurrentCommit = (& git -C $ProjectRoot rev-parse HEAD 2>$null).Trim()
-	$RemoteCommit = (& git ls-remote $RepoUrl "refs/heads/main" 2>$null).Split()[0]
+	$RemoteCommit = (& git ls-remote $RepoUrl "refs/heads/$UpdateBranch" 2>$null).Split()[0]
 	if (-not $CurrentCommit -or -not $RemoteCommit) {
-		throw "Could not determine the local or remote Git commit."
+		throw "Could not determine the local or remote Git commit for branch '$UpdateBranch'."
 	}
 
 	if ($CurrentCommit -eq $RemoteCommit) {
@@ -59,9 +61,9 @@ function Update-ApplicationCode {
 
 	$TempDir = Join-Path $env:TEMP ("HPECandyProLiant_" + [Guid]::NewGuid().ToString())
 	try {
-		Write-Output "Update available: $CurrentCommit -> $RemoteCommit"
+		Write-Output "Update available on '$UpdateBranch': $CurrentCommit -> $RemoteCommit"
 		New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
-		$Clone = Start-Process -FilePath "git" -ArgumentList @("clone", "--depth", "1", "--branch", "main", $RepoUrl, $TempDir) -NoNewWindow -Wait -PassThru
+		$Clone = Start-Process -FilePath "git" -ArgumentList @("clone", "--depth", "1", "--branch", $UpdateBranch, $RepoUrl, $TempDir) -NoNewWindow -Wait -PassThru
 		if ($Clone.ExitCode -ne 0) {
 			throw "Git clone failed with exit code $($Clone.ExitCode)."
 		}
