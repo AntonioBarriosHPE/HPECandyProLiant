@@ -474,7 +474,6 @@
         }
 
         function handleDemoStoppedLocally() {
-            if (!isDemoRunning) return;
             console.log("JS: Forcing UI reset (handleDemoStoppedLocally).");
             isDemoRunning = false;
             btnStartDemo.prop('disabled', false).removeClass("btn-success btn-danger").addClass("btn-primary")
@@ -498,17 +497,22 @@
                 btnStartDemo.prop('disabled', false);
                 btnSettings.prop('disabled', false);
 
-                // Camera stays closed until the user presses Start Demo.
-                isDemoRunning = false;
-                btnStartDemo.removeClass("btn-success").addClass("btn-primary")
-                    .find("i").removeClass("fa-stop").addClass("fa-play").end()
-                    .contents().last().text(" Start Demo");
+                console.log("JS: Auto-starting demo on WebSocket open.");
+                ws.send(JSON.stringify({command:"start_demo"}));
+
+                videoStatus.text("Status: Starting demo...");
+                btnStartDemo.removeClass("btn-primary").addClass("btn-success")
+                    .find("i").removeClass("fa-play").addClass("fa-stop").end()
+                    .contents().last().text(" Stop Demo");
+                isDemoRunning = true;
                 leaderboardSnapshotBase64 = null;
                 initialCandyDispensedThisStreak = false;
             };
 
             ws.onmessage = function(evt) {
                 if (evt.data instanceof ArrayBuffer) {
+                    // Frames flowing means the start succeeded, so allow Stop again.
+                    if (btnStartDemo.prop('disabled')) { btnStartDemo.prop('disabled', false); }
                     if (lastObjectURL) { URL.revokeObjectURL(lastObjectURL); }
                     const blob = new Blob([evt.data], {type: 'image/jpeg'});
                     lastObjectURL = URL.createObjectURL(blob);
@@ -611,6 +615,9 @@
             processingClick = true;
             var command = isDemoRunning ? "stop_demo" : "start_demo";
             ws.send(JSON.stringify({ command: command }));
+
+            // Stay disabled until the server confirms, so the camera is never torn down mid-open.
+            btnStartDemo.prop('disabled', true);
 
             if (isDemoRunning) { // If it was running, we are stopping it
                 videoStatus.text("Status: Stopping demo...");
