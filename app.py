@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import os
+import threading
 from pathlib import Path
 import platform
 import sys
@@ -48,10 +49,8 @@ def resolve_model_xml(model_dir_name, file_name):
     candidate = MODEL_IR_BASE_PATH / model_dir_name / MODEL_PRECISION / file_name
     return candidate if candidate.exists() else MODEL_IR_BASE_PATH / model_dir_name / "FP32" / file_name
 
-# Arduino Configuration - SET YOUR PORT HERE or use None for Dummy
-ARDUINO_SERIAL_PORT = ArduinoMotorController.get_auto_detect_com_port()
-# ARDUINO_SERIAL_PORT = None # To force dummy controller
-ARDUINO_BAUD_RATE = 9600
+# Set CANDY_ARDUINO_PORT to a specific port, or leave unset to auto-detect at startup.
+ARDUINO_SERIAL_PORT = os.getenv("CANDY_ARDUINO_PORT") or None
 
 DETECTION_THRESHOLD = 0.5  # Confidence threshold for face detection
 EMOTIONS_CLASSES = ['neutral', 'happy', 'sad', 'surprise', 'angry']
@@ -66,6 +65,40 @@ app_settings = {
     "emotion_consensus_window_size": 30, # Number of frames in emotion smoothing window
     "emotion_consensus_required_count": 10 # Number of matching frames required in window for consensus
 }
+SETTING_BOUNDS = {
+    "happy_time_ms": (0, 300000),
+    "motor_on_ms": (10, 30000),
+    "spin_pwm_value": (0, 255),
+    "cooldown_s": (0, 3600),
+    "min_face_area_threshold": (0, 258048),
+    "emotion_consensus_window_size": (1, 120),
+    "emotion_consensus_required_count": (1, 120),
+}
+INTEGER_SETTINGS = set(SETTING_BOUNDS) - {"happy_time_ms"}
+
+def validate_settings_update(settings_update):
+    """Return a bounded, whitelisted settings update or a user-facing error."""
+    if not isinstance(settings_update, dict):
+        return None, "Settings must be an object."
+
+    validated = {}
+    for key, value in settings_update.items():
+        if key not in SETTING_BOUNDS:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+            return None, f"Invalid value for {key}."
+        minimum, maximum = SETTING_BOUNDS[key]
+        if value < minimum or value > maximum:
+            return None, f"{key} must be between {minimum} and {maximum}."
+        if key in INTEGER_SETTINGS and not float(value).is_integer():
+            return None, f"{key} must be a whole number."
+        validated[key] = int(value) if key in INTEGER_SETTINGS else float(value)
+
+    window_size = validated.get("emotion_consensus_window_size", app_settings["emotion_consensus_window_size"])
+    required_count = validated.get("emotion_consensus_required_count", app_settings["emotion_consensus_required_count"])
+    if required_count > window_size:
+        return None, "Emotion consensus count cannot exceed its window size."
+    return validated, None
 
 class GameState(Enum):
     IDLE = 0
@@ -89,6 +122,7 @@ GAME_OVER_RESET_DELAY_S = 5.0 # Time to display GAME OVER before auto-resetting
 
 # --- Global State Variables ---
 is_demo_active = False
+demo_owner = None
 video_producer_task = None
 active_websockets = set()
 start_stop_lock = asyncio.Lock() # NEW: Lock to prevent race conditions on start/stop commands
@@ -170,7 +204,7 @@ def initialize_openvino_models():
     logger.info("Initializing OpenVINO Core and models...")
     try:
         ie_core = ov.Core()
-        logger.info(f"Available OpenVINO devices: {ie_core.available_devices}")
+        logger.info(f"Available OpenVINO devices: {ie_core.available_devices}; logical CPUs: {os.cpu_count()}")
 
         # FP16 only pays off on GPU; CPU-only hosts (e.g. Xeon servers) need INT8 instead.
         has_gpu = "GPU" in ie_core.available_devices
@@ -313,6 +347,193 @@ def recognize_emotion(face_roi_for_emotion_hwc):
         logger.warning(f"Exception during emotion recognition: {e}", exc_info=False)
         return None, 0.0
 
+def process_frame_ai(original_frame_hwc):
+    """Run CPU-heavy image preparation and OpenVINO inference off the event loop."""
+    detect_start_s = time.perf_counter()
+    frame_for_face_det_nchw, frame_resized_for_face_det_hwc = preprocess_frame_face_detection(original_frame_hwc)
+    detected_faces = detect_faces_from_input_frame(frame_for_face_det_nchw) if frame_for_face_det_nchw is not None else []
+    detect_elapsed_s = time.perf_counter() - detect_start_s
+
+    raw_emotion = None
+    face_roi_original = None
+    emotion_elapsed_s = 0.0
+    if detected_faces:
+        fx_m, fy_m, fx2_m, fy2_m = detected_faces[0]['rect_model_input_coords']
+        if frame_resized_for_face_det_hwc is not None:
+            orig_h, orig_w = original_frame_hwc.shape[:2]
+            scale_x = orig_w / face_det_input_shape_nchw['w']
+            scale_y = orig_h / face_det_input_shape_nchw['h']
+            orig_x1, orig_y1 = max(0, int(fx_m * scale_x)), max(0, int(fy_m * scale_y))
+            orig_x2, orig_y2 = min(orig_w, int(fx2_m * scale_x)), min(orig_h, int(fy2_m * scale_y))
+            if orig_x1 < orig_x2 and orig_y1 < orig_y2:
+                face_roi_original = original_frame_hwc[orig_y1:orig_y2, orig_x1:orig_x2]
+
+            if fx_m < fx2_m and fy_m < fy2_m:
+                emotion_start_s = time.perf_counter()
+                roi_for_emotion = frame_resized_for_face_det_hwc[fy_m:fy2_m, fx_m:fx2_m]
+                raw_emotion, _ = recognize_emotion(roi_for_emotion)
+                emotion_elapsed_s = time.perf_counter() - emotion_start_s
+
+    return detected_faces, raw_emotion, face_roi_original, detect_elapsed_s, emotion_elapsed_s
+
+async def run_blocking_to_completion(function, *args, cancel_cleanup=None):
+    """Run blocking work off-loop, but drain it before propagating cancellation."""
+    worker_task = asyncio.create_task(asyncio.to_thread(function, *args))
+    try:
+        return await asyncio.shield(worker_task)
+    except asyncio.CancelledError:
+        try:
+            result = await asyncio.shield(worker_task)
+            if cancel_cleanup is not None:
+                await asyncio.shield(asyncio.to_thread(cancel_cleanup, result))
+        except Exception:
+            logger.exception("Worker failed while its caller was being cancelled.")
+        raise
+
+def open_camera_device():
+    """Probe and initialize a webcam without blocking the asyncio event loop."""
+    backends_to_try = []
+    if platform.system() == "Windows":
+        backends_to_try.append(cv2.CAP_DSHOW)
+    elif platform.system() == "Darwin":
+        backends_to_try.append(cv2.CAP_AVFOUNDATION)
+    backends_to_try.append(None)
+
+    for cam_idx in range(5):
+        for backend_api in backends_to_try:
+            backend_name = "Default" if backend_api is None else "DSHOW" if backend_api == cv2.CAP_DSHOW else "AVFOUNDATION"
+            logger.info("Attempting to open Camera Index %s with backend: %s", cam_idx, backend_name)
+            cap_instance = None
+            try:
+                cap_instance = cv2.VideoCapture(cam_idx, backend_api) if backend_api is not None else cv2.VideoCapture(cam_idx)
+                if not cap_instance or not cap_instance.isOpened():
+                    if cap_instance is not None:
+                        cap_instance.release()
+                    continue
+
+                logger.info("Camera Index %s (%s) opened successfully.", cam_idx, backend_name)
+                if platform.system() != "Darwin":
+                    cap_instance.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+                cap_instance.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                cap_instance.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                cap_instance.set(cv2.CAP_PROP_FPS, 30)
+                cap_instance.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+                ret_read, _ = cap_instance.read()
+                if not ret_read:
+                    logger.warning("Camera Index %s (%s) opened, but failed to read a test frame.", cam_idx, backend_name)
+                    cap_instance.release()
+                    cap_instance = None
+                    continue
+
+                # Allow DirectShow auto-exposure to settle before returning the camera.
+                for _ in range(10):
+                    cap_instance.read()
+                    time.sleep(0.05)
+                logger.info("Successfully initialized Camera Index %s (backend: %s).", cam_idx, backend_name)
+                return cap_instance
+            except Exception:
+                logger.exception("Exception trying to open Camera Index %s (%s).", cam_idx, backend_name)
+            if cap_instance is not None:
+                try:
+                    cap_instance.release()
+                except Exception:
+                    logger.debug("Failed to release unsuccessful camera probe.", exc_info=True)
+
+    return None
+
+class LatestFrameCapture:
+    """Own camera open/read on one thread and keep only the freshest frame."""
+    def __init__(self, capture_factory):
+        self.capture_factory = capture_factory
+        self.capture = None
+        self._ready_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._release_lock = threading.Lock()
+        self._released = False
+        self._latest = None
+        self._error = None
+        self._sequence = 0
+        self._thread = threading.Thread(target=self._run, name="camera-capture", daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def _run(self):
+        try:
+            # DirectShow/COM cameras can fail if opened on one thread and read on another.
+            self.capture = self.capture_factory()
+        except Exception:
+            logger.exception("Camera initialization failed in capture thread.")
+            with self._lock:
+                self._error = "Camera initialization failed."
+            self._ready_event.set()
+            return
+        self._ready_event.set()
+        if self.capture is None:
+            with self._lock:
+                self._error = "No usable camera could be opened."
+            return
+
+        consecutive_failures = 0
+        while not self._stop_event.is_set():
+            started_s = time.perf_counter()
+            try:
+                ok, frame = self.capture.read()
+            except Exception:
+                logger.exception("Camera capture worker failed while reading a frame.")
+                with self._lock:
+                    self._error = "Camera read raised an exception."
+                self._stop_event.set()
+                break
+            elapsed_s = time.perf_counter() - started_s
+            if ok and frame is not None:
+                consecutive_failures = 0
+                with self._lock:
+                    self._sequence += 1
+                    self._latest = (self._sequence, frame, elapsed_s)
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= 50:
+                    with self._lock:
+                        self._error = "Camera stopped returning frames."
+                    self._stop_event.set()
+                    break
+                self._stop_event.wait(0.01)
+
+    def wait_until_ready(self, timeout_s):
+        return self._ready_event.wait(timeout_s)
+
+    def read_latest(self, after_sequence):
+        with self._lock:
+            if self._latest is None or self._latest[0] == after_sequence:
+                return None
+            return self._latest
+
+    @property
+    def error(self):
+        with self._lock:
+            return self._error
+
+    def stop(self):
+        self._stop_event.set()
+        self._thread.join(timeout=0.25)
+        if self._thread.is_alive():
+            # Releasing the device may unblock drivers stuck in a blocking read.
+            self._release_capture_once()
+            self._thread.join(timeout=1.0)
+        else:
+            self._release_capture_once()
+        if self._thread.is_alive():
+            logger.error("Camera capture thread did not stop after releasing the camera.")
+
+    def _release_capture_once(self):
+        with self._release_lock:
+            if not self._released and self.capture is not None:
+                self.capture.release()
+                self._released = True
+
 def frame_to_base64(frame, quality=75):
     """Encodes a frame to Base64. Only used for leaderboard snapshots now."""
     if frame is None:
@@ -418,6 +639,7 @@ async def video_stream_producer_loop():
     global emotion_history, stable_primary_emotion_name, MOTOR_CONTROLLER
 
     cap = None # Initialize cap to None
+    capture_worker = None
     try:
         if not models_initialized_successfully:
             logger.error("OpenVINO Models are not initialized. Video stream producer cannot start.")
@@ -429,53 +651,27 @@ async def video_stream_producer_loop():
         current_game_state = GameState.INITIAL_SMILE # Start in INITIAL_SMILE state
         logger.info("Video stream producer loop started. Game reset, current state: INITIAL_SMILE.")
 
-        # Define preferred camera backends based on OS
-        backends_to_try = []
-        if platform.system() == "Windows": backends_to_try.append(cv2.CAP_DSHOW)
-        elif platform.system() == "Darwin": backends_to_try.append(cv2.CAP_AVFOUNDATION)
-        backends_to_try.append(None) # Try default backend last
+        # The capture thread owns the VideoCapture from open through release.
+        capture_worker = LatestFrameCapture(open_camera_device)
+        capture_worker.start()
+        camera_ready = await run_blocking_to_completion(capture_worker.wait_until_ready, 60.0)
 
-        # Attempt to open webcam
-        for cam_idx in range(5): # Try first 5 camera indices
-            for backend_api in backends_to_try:
-                backend_name = "Default" if backend_api is None else "DSHOW" if backend_api == cv2.CAP_DSHOW else "AVFOUNDATION"
-                logger.info(f"Attempting to open Camera Index {cam_idx} with backend: {backend_name}")
-                try:
-                    cap_instance = cv2.VideoCapture(cam_idx, backend_api) if backend_api is not None else cv2.VideoCapture(cam_idx)
-                    if cap_instance and cap_instance.isOpened():
-                        logger.info(f"Camera Index {cam_idx} ({backend_name}) opened successfully.")
-                        # Set desired properties, check if they were applied
-                        if platform.system() != "Darwin": cap_instance.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                        cap_instance.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-                        cap_instance.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-                        cap_instance.set(cv2.CAP_PROP_FPS, 30)
-
-                        ret_read, _ = cap_instance.read() # Test read a frame
-                        if ret_read:
-                            # DSHOW cameras return dark frames until auto-exposure settles.
-                            for _ in range(10):
-                                cap_instance.read()
-                                time.sleep(0.05)
-                            logger.info(f"Successfully read a test frame from Camera Index {cam_idx} (backend: {backend_name}). Using this camera.")
-                            cap = cap_instance
-                            break
-                        else:
-                            logger.warning(f"Opened Camera Index {cam_idx} ({backend_name}), but failed to read a test frame.")
-                            if cap_instance: cap_instance.release()
-                except Exception as e:
-                    logger.error(f"Exception trying to open Camera Index {cam_idx} ({backend_name}): {e}")
-            if cap and cap.isOpened(): break
-
-        if not cap or not cap.isOpened():
+        if not camera_ready or capture_worker.error or capture_worker.capture is None:
             logger.error("Failed to open any webcam. Video stream producer cannot continue.")
             await broadcast({"type": "error", "message": "Webcam error on server. Cannot start demo."})
             is_demo_active = False
             return
 
+        cap = capture_worker.capture
+        # Keep only the newest frame: the inference pipeline should never process a
+        # growing backlog when camera FPS exceeds the model's processing rate.
+        last_frame_sequence = 0
+
         face_model_h = face_det_input_shape_nchw['h']
         face_model_w = face_det_input_shape_nchw['w']
         first_frame_sent_this_session = False
         last_perf_log_s = time.perf_counter()
+        frame_start_s = time.perf_counter()
 
         while is_demo_active:
             current_time_ms = int(time.time() * 1000)
@@ -491,39 +687,26 @@ async def video_stream_producer_loop():
                     reset_game_completely()
                     current_game_state = GameState.INITIAL_SMILE
 
-            frame_start_s = time.perf_counter()
-            ret, original_frame_hwc = cap.read()
-            perf_samples["capture"].append(time.perf_counter() - frame_start_s)
-            if not ret or original_frame_hwc is None:
-                logger.warning("Failed to grab frame from webcam.")
-                await asyncio.sleep(0.05)
+            frame_sample = capture_worker.read_latest(last_frame_sequence)
+            if frame_sample is None:
+                if capture_worker.error:
+                    raise RuntimeError(capture_worker.error)
+                await asyncio.sleep(0.005)
                 continue
+            last_frame_sequence, original_frame_hwc, capture_elapsed_s = frame_sample
+            perf_samples["capture"].append(capture_elapsed_s)
 
             # --- AI Processing ---
-            detect_start_s = time.perf_counter()
-            frame_for_face_det_nchw, frame_resized_for_face_det_hwc = preprocess_frame_face_detection(original_frame_hwc)
-            detected_faces = detect_faces_from_input_frame(frame_for_face_det_nchw) if frame_for_face_det_nchw is not None else []
-            perf_samples["detect"].append(time.perf_counter() - detect_start_s)
-
-            raw_detected_emotion_this_frame = None
-            current_face_roi_for_snapshot_hwc_original_scale = None
-
-            if detected_faces:
-                primary_face_data = detected_faces[0]
-                fx_m, fy_m, fx2_m, fy2_m = primary_face_data['rect_model_input_coords']
-                if original_frame_hwc is not None and frame_resized_for_face_det_hwc is not None:
-                    orig_h, orig_w = original_frame_hwc.shape[:2]
-                    scale_x_to_orig, scale_y_to_orig = orig_w / face_model_w, orig_h / face_model_h
-                    orig_x1, orig_y1 = max(0, int(fx_m * scale_x_to_orig)), max(0, int(fy_m * scale_y_to_orig))
-                    orig_x2, orig_y2 = min(orig_w, int(fx2_m * scale_x_to_orig)), min(orig_h, int(fy2_m * scale_y_to_orig))
-                    if orig_x1 < orig_x2 and orig_y1 < orig_y2:
-                         current_face_roi_for_snapshot_hwc_original_scale = original_frame_hwc[orig_y1:orig_y2, orig_x1:orig_x2]
-
-                if fx_m < fx2_m and fy_m < fy2_m and frame_resized_for_face_det_hwc is not None:
-                    roi_for_emotion_resized = frame_resized_for_face_det_hwc[fy_m:fy2_m, fx_m:fx2_m]
-                    emotion_start_s = time.perf_counter()
-                    raw_detected_emotion_this_frame, _ = recognize_emotion(roi_for_emotion_resized)
-                    perf_samples["emotion"].append(time.perf_counter() - emotion_start_s)
+            (
+                detected_faces,
+                raw_detected_emotion_this_frame,
+                current_face_roi_for_snapshot_hwc_original_scale,
+                detect_elapsed_s,
+                emotion_elapsed_s,
+            ) = await run_blocking_to_completion(process_frame_ai, original_frame_hwc)
+            perf_samples["detect"].append(detect_elapsed_s)
+            if emotion_elapsed_s:
+                perf_samples["emotion"].append(emotion_elapsed_s)
 
             # --- Emotion Smoothing Logic ---
             emotion_history.append(raw_detected_emotion_this_frame) if raw_detected_emotion_this_frame else emotion_history.clear() if not detected_faces else None
@@ -556,10 +739,7 @@ async def video_stream_producer_loop():
                                     snapshot_generated_this_frame = True
 
                             motor_activated_successfully = False
-                            if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected(): #and not MOTOR_CONTROLLER.is_busy(): # Note: Crashing here , why did you guys add another conditionall here?
-                                logger.info("Motor is available. Creating fire-and-forget task to activate.")
-                                asyncio.create_task(MOTOR_CONTROLLER.activate_motor())
-                                motor_activated_successfully = True
+                            motor_activated_successfully = await activate_motor_for_active_game()
 
                             if motor_activated_successfully:
                                 candy_dispensed_this_server_cycle = True
@@ -623,7 +803,8 @@ async def video_stream_producer_loop():
             if ready_signal_for_this_frame: first_frame_sent_this_session = True
 
             status_payload = {
-                "type": "status_update", "current_detected_emotion": stable_primary_emotion_name,
+                "type": "status_update", "demo_active": is_demo_active,
+                "current_detected_emotion": stable_primary_emotion_name,
                 "is_happy_for_initial_smile": (primary_emotion_name_for_logic == "happy" and current_game_state == GameState.INITIAL_SMILE),
                 "in_candy_cooldown": ui_in_candy_cooldown, "candy_eligible_again_time": candy_eligible_again_time_s * 1000,
                 "current_time_ms": current_time_ms, "initial_smile_streak_start_time_ms": (initial_happy_streak_start_time_ms if is_initial_happy_streak else 0),
@@ -640,7 +821,9 @@ async def video_stream_producer_loop():
 
             # NEW: Encode and broadcast frame as binary data
             encode_start_s = time.perf_counter()
-            ok, buf = cv2.imencode('.jpg', output_frame_hwc, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            ok, buf = await run_blocking_to_completion(
+                cv2.imencode, '.jpg', output_frame_hwc, [cv2.IMWRITE_JPEG_QUALITY, 70]
+            )
             perf_samples["encode"].append(time.perf_counter() - encode_start_s)
             if ok:
                 frame_broadcast_start_s = time.perf_counter()
@@ -649,6 +832,7 @@ async def video_stream_producer_loop():
 
             perf_samples["broadcast"].append(broadcast_elapsed_s)
             perf_samples["total"].append(time.perf_counter() - frame_start_s)
+            frame_start_s = time.perf_counter()
 
             if (time.perf_counter() - last_perf_log_s) >= PERF_LOG_INTERVAL_S:
                 log_perf_summary()
@@ -663,25 +847,77 @@ async def video_stream_producer_loop():
         logger.error(f"Unhandled exception in video_stream_producer_loop: {e}", exc_info=True)
         await broadcast({"type": "error", "message": "A server-side error occurred in video processing."})
     finally:
-        # NEW: Centralized, cancellation-safe cleanup
+        # Reset state before any I/O so a cleanup failure cannot strand the server as active.
+        is_demo_active = False
+        disarm_demo()
+        reset_game_completely()
+
         with suppress(asyncio.CancelledError):
-            if cap:
-                cap.release()
-                # Blocking on purpose: stop_demo awaits this task, so the delay guarantees
-                # Windows frees the DSHOW device before a restart tries to reopen it.
-                time.sleep(0.4)
-                logger.info("Webcam released in producer's finally block.")
+            try:
+                if capture_worker:
+                    await run_blocking_to_completion(capture_worker.stop)
+                elif cap:
+                    await run_blocking_to_completion(cap.release)
+                if cap:
+                    # Let Windows finish releasing DirectShow before a restart reopens it.
+                    await asyncio.sleep(0.4)
+                    logger.info("Webcam released in producer's finally block.")
+            except Exception:
+                logger.exception("Error while releasing camera resources.")
+            finally:
+                logger.info("Broadcasting final 'demo_stopped' from producer loop cleanup.")
+                try:
+                    await broadcast({"type": "demo_stopped", "message": "Demo loop finished."})
+                except Exception:
+                    logger.exception("Failed to broadcast demo-stopped status.")
+                logger.info("Video stream producer loop finished its execution and cleanup.")
 
-            reset_game_completely()
 
-            logger.info("Broadcasting final 'demo_stopped' from producer loop cleanup.")
-            await broadcast({"type": "demo_stopped", "message": "Demo loop finished."})
+def disarm_demo():
+    global demo_owner
+    demo_owner = None
 
-            logger.info("Video stream producer loop finished its execution and cleanup.")
+
+async def activate_motor_for_active_game():
+    if not is_demo_active or demo_owner not in active_websockets or demo_owner.closed:
+        return False
+    if not MOTOR_CONTROLLER or not MOTOR_CONTROLLER.is_connected():
+        return False
+    try:
+        return await MOTOR_CONTROLLER.activate_motor()
+    except Exception:
+        logger.exception("Motor activation failed.")
+        return False
+
+
+async def stop_active_demo(only_if_no_clients=False):
+    """Serialize demo shutdown so a lost UI cannot leave camera capture running."""
+    global is_demo_active, video_producer_task
+    async with start_stop_lock:
+        if only_if_no_clients and active_websockets:
+            return False
+        disarm_demo()
+        if not is_demo_active:
+            return False
+
+        logger.info("Stopping active demo%s.", " after the last client disconnected" if only_if_no_clients else "")
+        is_demo_active = False
+        task_to_cancel = video_producer_task
+        video_producer_task = None
+        if task_to_cancel and task_to_cancel is not asyncio.current_task() and not task_to_cancel.done():
+            task_to_cancel.cancel()
+            try:
+                await task_to_cancel
+            except asyncio.CancelledError:
+                logger.info("Awaited demo producer cancellation as expected.")
+            except Exception:
+                logger.exception("Demo producer failed during shutdown.")
+        return True
 
 
 async def websocket_handler(request):
     global is_demo_active, video_producer_task, active_websockets, app_settings, emotion_history
+    global demo_owner
 
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -692,7 +928,7 @@ async def websocket_handler(request):
 
     if models_initialized_successfully:
         motor_status_msg = f"Connected ({type(MOTOR_CONTROLLER).__name__})" if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected() else "Not Connected."
-        await ws.send_json({"type": "status_update", "ready": True, "game_state": current_game_state.name, "message": f"Server ready. Motor: {motor_status_msg}"})
+        await ws.send_json({"type": "status_update", "ready": True, "demo_active": is_demo_active, "game_state": current_game_state.name, "message": f"Server ready. Motor: {motor_status_msg}"})
     else:
         await ws.send_json({"type": "error", "message": "Server AI models are not initialized."})
 
@@ -705,44 +941,48 @@ async def websocket_handler(request):
                     logger.info(f"WebSocket received command: '{cmd}'")
 
                     if cmd == "start_demo":
+                        if data.get("play_requested") is not True:
+                            await ws.send_json({"type": "error", "message": "Press Play before starting the camera."})
+                            continue
                         async with start_stop_lock:
                             if not is_demo_active:
                                 if not models_initialized_successfully:
                                     await ws.send_json({"type": "error", "message": "Server AI models not ready."})
                                     continue
 
-                                is_demo_active = True
                                 if video_producer_task and not video_producer_task.done():
                                     video_producer_task.cancel()
                                     try: await video_producer_task
                                     except asyncio.CancelledError: pass
 
+                                # Old producer cleanup sets this false; set true only after it drains.
+                                demo_owner = ws
+                                is_demo_active = True
                                 video_producer_task = asyncio.create_task(video_stream_producer_loop())
                                 logger.info("Demo started by WebSocket command.")
+                                await ws.send_json({
+                                    "type": "demo_starting",
+                                    "demo_active": True,
+                                    "message": "Opening the camera.",
+                                })
                             else:
                                 await ws.send_json({"type": "info", "message": "Demo is already active."})
 
                     elif cmd == "stop_demo":
-                        async with start_stop_lock:
-                            if is_demo_active:
-                                logger.info("Command 'stop_demo': Setting is_demo_active=False and cancelling task.")
-                                is_demo_active = False # Signal loop to stop
-                                task_to_cancel = video_producer_task
-                                video_producer_task = None
-                                if task_to_cancel and not task_to_cancel.done():
-                                    task_to_cancel.cancel()
-                                    try: await task_to_cancel
-                                    except asyncio.CancelledError: logger.info("Awaited task caught CancelledError as expected.")
-                                # Cleanup and 'demo_stopped' broadcast is now handled by the producer's finally block
-                            else:
-                                await ws.send_json({"type": "info", "message": "Demo is not currently active."})
+                        stopped = await stop_active_demo()
+                        if not stopped:
+                            await ws.send_json({"type": "info", "message": "Demo is not currently active."})
 
                     elif cmd == "update_settings":
                         new_settings_payload = data.get("settings", {})
                         if new_settings_payload:
-                            app_settings.update(new_settings_payload)
+                            validated_settings, validation_error = validate_settings_update(new_settings_payload)
+                            if validation_error:
+                                await ws.send_json({"type": "error", "message": validation_error})
+                                continue
+                            app_settings.update(validated_settings)
                             logger.info(f"Settings updated: {app_settings}")
-                            if 'emotion_consensus_window_size' in new_settings_payload:
+                            if 'emotion_consensus_window_size' in validated_settings:
                                 emotion_history = deque(list(emotion_history), maxlen=app_settings["emotion_consensus_window_size"])
 
                             if MOTOR_CONTROLLER and MOTOR_CONTROLLER.is_connected():
@@ -760,6 +1000,11 @@ async def websocket_handler(request):
     finally:
         active_websockets.discard(ws)
         logger.info(f"WebSocket client disconnected: {request.remote}. Total clients: {len(active_websockets)}")
+        if demo_owner is ws:
+            disarm_demo()
+            await stop_active_demo()
+        elif not active_websockets:
+            await stop_active_demo(only_if_no_clients=True)
     return ws
 
 async def handle_index_page(request):
@@ -775,7 +1020,12 @@ async def on_aiohttp_startup(app_obj):
     emotion_history = deque(maxlen=app_settings["emotion_consensus_window_size"])
 
     logger.info("Initializing Motor Controller...")
-    MOTOR_CONTROLLER = ArduinoMotorController(port=ARDUINO_SERIAL_PORT, baud_rate=ARDUINO_BAUD_RATE) if ARDUINO_SERIAL_PORT else DummyMotorController()
+    serial_connection = await asyncio.to_thread(
+        ArduinoMotorController.get_auto_detect_connection, port=ARDUINO_SERIAL_PORT
+    )
+    MOTOR_CONTROLLER = ArduinoMotorController(
+        port=serial_connection[0], baud_rate=serial_connection[1]
+    ) if serial_connection else DummyMotorController()
 
     if not await MOTOR_CONTROLLER.connect():
         logger.error(f"Failed to connect {type(MOTOR_CONTROLLER).__name__}. Falling back to DummyMotorController.")
@@ -789,6 +1039,7 @@ async def on_aiohttp_startup(app_obj):
 async def on_aiohttp_shutdown(app_obj):
     global is_demo_active, video_producer_task, MOTOR_CONTROLLER
     logger.info("Application server shutting down...")
+    disarm_demo()
     is_demo_active = False
 
     if video_producer_task and not video_producer_task.done():

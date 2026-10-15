@@ -139,7 +139,7 @@ try {
 	$PortProbe.Stop()
 	$env:CANDY_HTTP_HOST = "127.0.0.1"
 	$env:CANDY_HTTP_PORT = "$HttpPort"
-	$Url = "http://localhost:$HttpPort"
+	$Url = "http://127.0.0.1:$HttpPort"
 	Write-Output "Selected HTTP port: $HttpPort"
 
 	if (-not (Get-Command "py" -ErrorAction SilentlyContinue)) {
@@ -206,8 +206,29 @@ try {
 	Set-Content -Path $PidFile -Value $CandyProcess.Id -NoNewline
 	Write-Output "Candy Machine started with PID $($CandyProcess.Id)."
 
-	Write-Output "Waiting 5 seconds for Python and Arduino initialization..."
-	Start-Sleep -Seconds 5
+	Write-Output "Waiting for the web server to become ready..."
+	$Ready = $false
+	for ($Attempt = 0; $Attempt -lt 90; $Attempt++) {
+		if ($CandyProcess.HasExited) {
+			throw "Candy Machine exited during startup. Review $PythonErrLog for details."
+		}
+
+		try {
+			$Response = Invoke-WebRequest -Uri "$Url/" -TimeoutSec 1 -UseBasicParsing -ErrorAction Stop
+			if ($Response.StatusCode -eq 200) {
+				$Ready = $true
+				break
+			}
+		}
+		catch {
+			Start-Sleep -Seconds 1
+		}
+	}
+	if (-not $Ready) {
+		throw "Candy Machine did not become ready at $Url within 90 seconds. Review $PythonErrLog."
+	}
+
+	Write-Output "Candy Machine is ready at $Url"
 	Start-Process "chrome.exe" "--new-window --start-fullscreen $Url" -WindowStyle Maximized
 	Write-Output "--- Launch Sequence Completed Successfully ---"
 }
