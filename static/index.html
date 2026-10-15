@@ -358,6 +358,10 @@
     <div class="modal fade" id="settingsModal" tabindex="-1" role="dialog"><div class="modal-dialog modal-lg" role="document"><div class="modal-content">
         <div class="modal-header"><h5 class="modal-title">Demo Settings</h5><button type="button" class="close" data-dismiss="modal">×</button></div>
         <div class="modal-body">
+            <div class="custom-control custom-switch mb-3">
+                <input type="checkbox" class="custom-control-input" id="showSplashScreenInput" role="switch" checked>
+                <label class="custom-control-label" for="showSplashScreenInput">Show splash screen</label>
+            </div><hr>
             <div class="form-row"><div class="form-group col-md-6"><label>Min. Happy Time for Candy (s):</label><input type="number" class="form-control" id="happyTimeRequirementInput" value="5" step="0.1" min="1"></div><div class="form-group col-md-6"><label>Candy Cooldown Time (s):</label><input type="number" class="form-control" id="candyCooldownInput" value="5" step="1" min="0"></div></div><hr>
             <div class="form-row"><div class="form-group col-md-6"><label>Dispenser Motor Run Time (s):</label><input type="number" class="form-control" id="candyMotorDurationInput" value="3" step="0.1" min="0.5"></div><div class="form-group col-md-6"><label>Motor Spin PWM (0-255):</label><input type="number" class="form-control" id="spinPwmInput" value="150" step="10" min="0" max="255"></div></div><hr>
             <div class="form-row"><div class="form-group col-md-6"><label>Min. Face Area for Detection (pixels):</label><input type="number" class="form-control" id="minFaceAreaInput" value="5000" step="100" min="0"><small class="form-text text-muted">Filters faces too far away.</small></div></div><hr>
@@ -677,8 +681,8 @@
                 btnStartDemo.prop('disabled', true);
                 videoStatus.text("Status: Stopping demo...");
                 setTimeout(() => { processingClick = false; }, 500);
-            } else {
-                startCandyDemo();
+            } else if ($("#splashScreen").is(":hidden")) {
+                window.playCandyGame();
             }
         });
 
@@ -690,6 +694,7 @@
                 emotion_consensus_required_count: parseInt($('#emotionConsensusRequiredInput').val(), 10)
             };
             if (Object.values(settings).some(isNaN)) { alert("Invalid settings."); return; }
+            window.setCandySplashEnabled($('#showSplashScreenInput').prop('checked'));
             if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify({ command: "update_settings", settings: settings })); }
             $('#settingsModal').modal('hide');
         });
