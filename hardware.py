@@ -148,56 +148,53 @@ class ArduinoMotorController(MotorControllerInterface):
 
     @staticmethod
     def get_auto_detect_com_port(device_keyword=None):
-        ports = list(serial.tools.list_ports.comports())
-        if not ports:
-            print("[ERROR] No physical COM ports found on this system.")
-            return None
+        connection = ArduinoMotorController.get_auto_detect_connection(device_keyword)
+        return connection[0] if connection else None
 
-        valid_candidates = []
+    @staticmethod
+    def _verify_serial_controller(connection):
+        deadline = time.monotonic() + 4.0
+        next_probe = 0.0
+        while (now := time.monotonic()) < deadline:
+            if now >= next_probe:
+                connection.write(b"SPIN:0\n")
+                next_probe = now + 0.5
+            response = connection.readline().decode("utf-8", errors="replace").strip()
+            if response in ("ARDUINO READY", "ACK SPIN set to 0"):
+                return True
+        return False
 
-        # Step 1: Scan descriptions, hardware IDs, and manufacturer details
-        for port in ports:
-            # Check description, hardware ID string, and manufacturer details
-            desc = (port.description or "").lower()
-            hwid = (port.hwid or "").lower()
-            mfg = getattr(port, 'manufacturer', '') or ""
-            mfg = mfg.lower()
+    @staticmethod
+    def get_auto_detect_connection(device_keyword=None, port=None):
+        """Return a protocol-verified (port, baud rate), never just an open port."""
+        ports = list(serial.tools.list_ports.comports()) if port is None else []
 
-            # Print everything found to help you debug in your Python log files
-            print(f"[DEBUG] Found Port: {port.device} | Desc: {port.description} | MFG: {port.manufacturer}")
+        def preferred(candidate):
+            details = " ".join(str(getattr(candidate, field, "") or "") for field in (
+                "description", "hwid", "manufacturer"
+            )).lower()
+            keywords = ["arduino", "usb-serial", "ch340", "cp210", "ftdi"]
+            if device_keyword:
+                keywords.append(device_keyword.lower())
+            return any(keyword in details for keyword in keywords)
 
-            # Match explicitly specified keywords or standard microcontroller hardware flags
-            is_match = (
-                (device_keyword and device_keyword.lower() in desc) or
-                (device_keyword and device_keyword.lower() in mfg) or
-                "usb-serial" in desc or
-                "ch340" in desc or       # Common cheap clone chips
-                "cp210" in desc or       # NodeMCU / ESP8266 chips
-                "ftdi" in desc           # Official FTDI chips
-            )
+        candidates = [port] if port else [candidate.device for candidate in sorted(ports, key=preferred, reverse=True)]
+        for device_path in candidates:
+            for baud_rate in (9600, 115200):
+                connection = None
+                try:
+                    connection = serial.Serial(device_path, baudrate=baud_rate, timeout=0.2)
+                    if ArduinoMotorController._verify_serial_controller(connection):
+                        arduino_logger.info("Verified candy controller on %s at %s baud.", device_path, baud_rate)
+                        return device_path, baud_rate
+                    arduino_logger.info("No candy-controller response on %s at %s baud.", device_path, baud_rate)
+                except (serial.SerialException, OSError) as error:
+                    arduino_logger.info("Cannot probe %s at %s baud: %s", device_path, baud_rate, error)
+                finally:
+                    if connection is not None:
+                        connection.close()
 
-            if is_match:
-                valid_candidates.append(port.device)
-
-        # Fallback: if no keyword matched, test all system ports instead of blinding grabbing index 0
-        if not valid_candidates:
-            print("[WARN] No obvious microcontroller found by keyword. Testing all available ports...")
-            valid_candidates = [p.device for p in ports]
-
-        # Step 2: Actively test connection stability on candidates (No more blind index selection!)
-        for device_path in valid_candidates:
-            try:
-                # Try opening the port with a short timeout to see if it responds or is already blocked
-                test_serial = serial.Serial(device_path, baudrate=9600, timeout=1)
-                time.sleep(1)  # Allow Arduino a moment to toggle DTR/reset
-                test_serial.close()
-
-                print(f"[SUCCESS] Found working and responsive COM Port: [ {device_path} ]")
-                return device_path
-            except (serial.SerialException, OSError) as e:
-                print(f"[INFO] Skipping {device_path}: Port is busy, locked, or unresponsive. ({str(e)})")
-
-        print("[ERROR] Could not find any free, working COM ports to communicate with.")
+        arduino_logger.warning("No verified candy controller found; physical motor will remain unavailable.")
         return None
 
     async def connect(self) -> bool:
@@ -219,22 +216,18 @@ class ArduinoMotorController(MotorControllerInterface):
                 self.serial_conn.dtr = True
             await self.loop.run_in_executor(None, apply_dtr_fix)
 
+            verified = await self.loop.run_in_executor(None, self._verify_serial_controller, self.serial_conn)
+            if not verified:
+                arduino_logger.error("No candy-controller handshake on %s; refusing connection.", self.port)
+                self.disconnect()
+                return False
+
             self._is_reader_active = True
             self.reader_thread = threading.Thread(target=self._serial_reader_loop, daemon=True)
             self.reader_thread.start()
             arduino_logger.info(f"Serial port {self.port} opened. Reader thread started.")
 
-            ready_timeout_s = 4.0
-            arduino_logger.info(f"Waiting for 'ARDUINO READY' for up to {ready_timeout_s}s...")
-            try:
-                while True: # Loop to consume startup messages
-                    response = await asyncio.wait_for(self.response_queue.get(), timeout=ready_timeout_s)
-                    if "ARDUINO READY" in response:
-                        arduino_logger.info("'ARDUINO READY' signal received. Connection confirmed.")
-                        return True
-            except asyncio.TimeoutError:
-                arduino_logger.warning("'ARDUINO READY' not seen. Assuming it's already running. Proceeding.")
-                return True
+            return True
 
         except Exception as e:
             arduino_logger.error(f"ArduinoMotorController: Error during connect: {e}", exc_info=True)

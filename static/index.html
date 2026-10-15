@@ -373,6 +373,9 @@
         var wsProtocol = window.location.protocol === "https:" ? "wss" : "ws";
         var wsUrl = `${wsProtocol}://${host}:${wsPort}/ws`;
         var isDemoRunning = false;
+        var demoStartupDeadlineMs = 0;
+        var startDemoWhenConnected = false;
+        var playRequested = false;
         var defaultUserImg = "/static/img/happy_face.jpg";
         let lastObjectURL = null;
         let lastStatusMs = Date.now();
@@ -473,12 +476,63 @@
             $(".status-card").removeClass("active pulse glow"); $("#countdownCard").addClass("active");
         }
 
+        function setDemoButtonState(isRunning) {
+            isDemoRunning = isRunning;
+            btnStartDemo.prop('disabled', false)
+                .toggleClass("btn-success", isRunning)
+                .toggleClass("btn-danger", false)
+                .toggleClass("btn-primary", !isRunning)
+                .find("i").toggleClass("fa-stop", isRunning).toggleClass("fa-play", !isRunning).end();
+            btnStartDemo.contents().filter(function() { return this.nodeType === Node.TEXT_NODE; }).remove();
+            btnStartDemo.append(document.createTextNode(isRunning ? " Stop Demo" : " Start Demo"));
+        }
+
+            function startCandyDemo() {
+                if (!playRequested) return;
+                if (processingClick || isDemoRunning) return;
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    startDemoWhenConnected = true;
+                    videoStatus.text("Status: Connecting before starting the camera...");
+                    return;
+                }
+                startDemoWhenConnected = false;
+                processingClick = true;
+                demoStartupDeadlineMs = Date.now() + 20000;
+                lastStatusMs = Date.now();
+                ws.send(JSON.stringify({ command: "start_demo", play_requested: true }));
+                btnStartDemo.prop('disabled', true);
+                videoStatus.text("Status: Starting camera...");
+                setDemoButtonState(true);
+                btnStartDemo.prop('disabled', true);
+                leaderboardSnapshotBase64 = null;
+                initialCandyDispensedThisStreak = false;
+                setTimeout(() => { processingClick = false; }, 500);
+            }
+            window.startCandyDemo = startCandyDemo;
+
+        window.playCandyGame = function() {
+            playRequested = true;
+            startCandyDemo();
+        };
+
+        window.stopCandyGame = function() {
+            playRequested = false;
+            startDemoWhenConnected = false;
+            demoStartupDeadlineMs = 0;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ command: "stop_demo" }));
+            }
+            handleDemoStoppedLocally();
+        };
+
+        window.addEventListener("pagehide", function() {
+            window.stopCandyGame();
+            if (ws) ws.close();
+        });
+
         function handleDemoStoppedLocally() {
             console.log("JS: Forcing UI reset (handleDemoStoppedLocally).");
-            isDemoRunning = false;
-            btnStartDemo.prop('disabled', false).removeClass("btn-success btn-danger").addClass("btn-primary")
-                .find("i").removeClass("fa-stop").addClass("fa-play").end()
-                .contents().last().text(" Start Demo");
+            setDemoButtonState(false);
             resetUIDisplayToIdle();
             leaderboardSnapshotBase64 = null;
             initialCandyDispensedThisStreak = false;
@@ -497,13 +551,8 @@
                 btnStartDemo.prop('disabled', false);
                 btnSettings.prop('disabled', false);
 
-                // Camera stays closed until the user presses Start Demo.
-                isDemoRunning = false;
-                btnStartDemo.removeClass("btn-success").addClass("btn-primary")
-                    .find("i").removeClass("fa-stop").addClass("fa-play").end()
-                    .contents().last().text(" Start Demo");
-                leaderboardSnapshotBase64 = null;
-                initialCandyDispensedThisStreak = false;
+                // The server's initial status message determines the actual demo state.
+                if (startDemoWhenConnected) { startCandyDemo(); }
             };
 
             ws.onmessage = function(evt) {
@@ -529,6 +578,12 @@
 
                 if (msg.type === "status_update") {
                     lastStatusMs = Date.now();
+
+                    // Sync the control with server state after a refresh/reconnect.
+                    if (typeof msg.demo_active === "boolean") {
+                        setDemoButtonState(msg.demo_active);
+                    }
+                    if (msg.ready) { demoStartupDeadlineMs = 0; }
 
                     if (msg.new_snapshot_taken && msg.leaderboard_snapshot_b64) { leaderboardSnapshotBase64 = msg.leaderboard_snapshot_b64; }
                     if (msg.ready && msg.message && !isDemoRunning) { videoStatus.text("Status: " + msg.message); }
@@ -583,9 +638,15 @@
                     }
                 } else if (msg.type === "demo_stopped") {
                     console.log("JS: Received 'demo_stopped' from server.");
+                    demoStartupDeadlineMs = 0;
                     handleDemoStoppedLocally();
+                } else if (msg.type === "demo_starting") {
+                    lastStatusMs = Date.now();
+                    demoStartupDeadlineMs = Date.now() + 20000;
+                    videoStatus.text("Status: Starting camera...");
                 } else if (msg.type === "error") {
                     videoStatus.text("Status: Server Error - " + msg.message).addClass("text-danger");
+                    demoStartupDeadlineMs = 0;
                     if (isDemoRunning) handleDemoStoppedLocally();
                 } else if (msg.type === "config_update") {
                     currentHappyDurationRequirementMs = msg.settings.happy_time_ms; currentCandyMotorOnDurationMs = msg.settings.motor_on_ms;
@@ -609,24 +670,16 @@
 
         btnStartDemo.click(function() {
             if (processingClick || !ws || ws.readyState !== WebSocket.OPEN) return;
-            processingClick = true;
-            var command = isDemoRunning ? "stop_demo" : "start_demo";
-            ws.send(JSON.stringify({ command: command }));
-
-            // Stay disabled until the server confirms, so the camera is never torn down mid-open.
-            btnStartDemo.prop('disabled', true);
-
-            if (isDemoRunning) { // If it was running, we are stopping it
+            if (isDemoRunning) {
+                processingClick = true;
+                demoStartupDeadlineMs = 0;
+                ws.send(JSON.stringify({ command: "stop_demo" }));
+                btnStartDemo.prop('disabled', true);
                 videoStatus.text("Status: Stopping demo...");
-            } else { // This case is now only for manual start if auto-start is disabled
-                videoStatus.text("Status: Starting demo...");
-                $(this).removeClass("btn-primary").addClass("btn-success")
-                    .find("i").removeClass("fa-play").addClass("fa-stop").end()
-                    .contents().last().text(" Stop Demo");
-                isDemoRunning = true; leaderboardSnapshotBase64 = null; initialCandyDispensedThisStreak = false;
+                setTimeout(() => { processingClick = false; }, 500);
+            } else {
+                startCandyDemo();
             }
-
-            setTimeout(() => { processingClick = false; }, 500);
         });
 
         $("#applySettingsButton").click(function() {
@@ -650,8 +703,12 @@
             updateLeaderboardUI(); connectWebSocket();
 
             setInterval(() => {
-                if (isDemoRunning && Date.now() - lastStatusMs > 2000) {
-                    console.warn('No status update from server in 2s, forcing UI reset.');
+                const statusTimeoutMs = demoStartupDeadlineMs > 0 ? 20000 : 2000;
+                if (isDemoRunning && Date.now() - lastStatusMs > statusTimeoutMs) {
+                    console.warn('No status update from server, requesting demo stop.');
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ command: "stop_demo" }));
+                    }
                     handleDemoStoppedLocally();
                 }
             }, 1000);
