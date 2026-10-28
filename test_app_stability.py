@@ -153,6 +153,95 @@ class CaptureWorkerTests(unittest.TestCase):
 
 
 class AsyncStabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_snapshot_expiry_clears_server_image_and_deadline(self):
+        try:
+            with patch.object(app, "LEADERBOARD_IMAGE_RETENTION_S", 0.01):
+                app.set_leaderboard_snapshot("test-photo")
+                self.assertEqual(app.leaderboard_snapshot_b64, "test-photo")
+                self.assertGreater(app.leaderboard_snapshot_expires_at_ms, time.time() * 1000)
+                await asyncio.sleep(0.03)
+                self.assertIsNone(app.leaderboard_snapshot_b64)
+                self.assertEqual(app.leaderboard_snapshot_expires_at_ms, 0)
+                self.assertIsNone(app.leaderboard_snapshot_expiry_handle)
+        finally:
+            app.clear_leaderboard_snapshot()
+
+    async def test_snapshot_replacement_and_reset_cancel_old_expiry(self):
+        try:
+            app.set_leaderboard_snapshot("first-photo")
+            old_handle = app.leaderboard_snapshot_expiry_handle
+            app.set_leaderboard_snapshot("second-photo")
+            self.assertTrue(old_handle.cancelled())
+            self.assertEqual(app.leaderboard_snapshot_b64, "second-photo")
+            self.assertAlmostEqual(
+                app.leaderboard_snapshot_expires_at_ms / 1000 - time.time(), 12 * 60 * 60, delta=1
+            )
+            current_handle = app.leaderboard_snapshot_expiry_handle
+            app.reset_game_completely()
+            self.assertTrue(current_handle.cancelled())
+            self.assertIsNone(app.leaderboard_snapshot_b64)
+            self.assertIsNone(app.leaderboard_attempt_id)
+        finally:
+            app.clear_leaderboard_snapshot()
+
+    async def asyncSetUp(self):
+        cooldown_patch = patch.object(app, "candy_eligible_again_time_s", 0)
+        stop_time_patch = patch.object(app, "dispenser_motor_should_stop_time_s", 0)
+        cooldown_patch.start()
+        stop_time_patch.start()
+        self.addCleanup(cooldown_patch.stop)
+        self.addCleanup(stop_time_patch.stop)
+
+    async def test_manual_dispense_without_smile_preserves_game_and_blocks_repeats(self):
+        motor = Mock(is_connected=Mock(return_value=True), activate_motor=AsyncMock(return_value=True))
+        server_app = app.web.Application()
+        server_app.router.add_get("/ws", app.websocket_handler)
+        with patch.multiple(
+            app,
+            models_initialized_successfully=True,
+            is_demo_active=True,
+            demo_owner=None,
+            active_websockets=set(),
+            MOTOR_CONTROLLER=motor,
+            current_game_state=app.GameState.INITIAL_SMILE,
+            stable_primary_emotion_name=None,
+            is_initial_happy_streak=False,
+        ), patch.object(app, "stop_active_demo", new_callable=AsyncMock):
+            async with TestClient(TestServer(server_app)) as client:
+                player = await client.ws_connect("/ws")
+                await player.receive_json()
+                await player.receive_json()
+                app.demo_owner = next(iter(app.active_websockets))
+                observer = await client.ws_connect("/ws")
+                await observer.receive_json()
+                await observer.receive_json()
+                await player.send_json({"command": "dispense_candy"})
+                response = await player.receive_json()
+                self.assertEqual(response["type"], "dispense_result")
+                self.assertTrue(response["success"])
+                self.assertGreater(response["candy_eligible_again_time"], response["current_time_ms"])
+                self.assertEqual(app.current_game_state, app.GameState.INITIAL_SMILE)
+                self.assertFalse(app.is_initial_happy_streak)
+                await player.send_json({"command": "dispense_candy"})
+                self.assertFalse((await player.receive_json())["success"])
+                self.assertFalse(await app.activate_motor_for_active_game())
+                app.candy_eligible_again_time_s = 0
+                await observer.send_json({"command": "dispense_candy"})
+                self.assertFalse((await observer.receive_json())["success"])
+                motor.activate_motor.assert_awaited_once()
+                await player.close()
+                await observer.close()
+
+    async def test_failed_motor_activation_does_not_start_cooldown(self):
+        owner = Mock(closed=False)
+        for result in (False, RuntimeError("motor unavailable")):
+            with self.subTest(result=result):
+                motor = Mock(is_connected=Mock(return_value=True))
+                motor.activate_motor = AsyncMock(side_effect=result) if isinstance(result, Exception) else AsyncMock(return_value=result)
+                with patch.multiple(app, is_demo_active=True, demo_owner=owner, active_websockets={owner}, MOTOR_CONTROLLER=motor):
+                    self.assertFalse(await app.activate_motor_for_active_game())
+                    self.assertEqual(app.candy_eligible_again_time_s, 0)
+
     async def test_startup_uses_detected_port_and_baud(self):
         for override in (None, "COM12"):
             with self.subTest(override=override), patch.object(
