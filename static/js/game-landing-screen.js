@@ -21,7 +21,7 @@ $(function () {
             console.warn("Splash screen preference could not be saved.", error);
         }
         updateSplashControls();
-        if (splashEnabled && !window.isDemoRunning) {
+        if (splashEnabled) {
             returnToLandingScreen();
         } else {
             $("#splashScreen").stop(true, true).hide();
