@@ -137,6 +137,21 @@
             flex: 0 0 auto;
         }
 
+        #manualDispenseControls {
+            flex: 0 0 auto;
+            text-align: center;
+            padding-top: 0.75rem;
+        }
+        #btnDispenseCandy {
+            max-width: 100%;
+            white-space: normal;
+        }
+        #manualDispenseStatus {
+            min-height: 1.5em;
+            margin: 0.35rem 0 0;
+            color: #ccc;
+        }
+
         @media (min-width: 992px) {
             main .container-fluid > .row.h-100 {
                 display: grid;
@@ -259,6 +274,9 @@
         @media (max-width: 991.98px) {
             #rightPane { margin-top: 1.5rem; }
             #videoWrapper { padding-bottom: 3.5rem; }
+            #videoOuterContainer { flex: 0 0 auto; }
+            #videoContainer { height: auto; aspect-ratio: 16 / 9; }
+            #videoElement { height: 100%; }
             body { padding-bottom: 60px; } /* Add some padding on mobile for footer */
         }
     </style>
@@ -279,8 +297,8 @@
 
             <div class="disclaimer-box">
                 This interactive game analyzes facial expressions in real time to trigger
-                candy rewards. No images or personal data are stored, and participation
-                is voluntary.
+                candy rewards. Leaderboard photos are kept temporarily for up to 12 hours,
+                and participation is voluntary.
             </div>
             <a href="/static/agreement.html" class="btn agreement-btn agreement-btn:hover">
                 Read Full Agreement
@@ -327,6 +345,12 @@
                 </div>
                 <div id="videoWrapper">
                     <div id="videoOuterContainer"><div id="videoContainer"><img id="videoElement" src="/static/img/happy_face.jpg" alt="Video feed"></div></div>
+                    <div id="manualDispenseControls">
+                        <button type="button" id="btnDispenseCandy" class="btn btn-success" disabled>
+                            <i class="fas fa-gift" aria-hidden="true"></i> Dispense Candy Without AI
+                        </button>
+                        <p id="manualDispenseStatus" role="status" aria-live="polite"></p>
+                    </div>
                     <h4 id="videoStatus" class="status-text">Status: Idle. Click Start Demo.</h4>
                     <p id="demoDescription" class="demo-caption">
                         Smile for at least <span id="minSmileTimeAbout">5</span>s for candy! Then, play the emotion-matching minigame for bonus points!
@@ -380,6 +404,8 @@
         var demoStartupDeadlineMs = 0;
         var startDemoWhenConnected = false;
         var playRequested = false;
+        var manualDispensePending = false;
+        var candyCooldownUntilMs = 0;
         var defaultUserImg = "/static/img/happy_face.jpg";
         let lastObjectURL = null;
         let lastStatusMs = Date.now();
@@ -394,11 +420,51 @@
         var currentHappyDurationRequirementMs = 5000, currentCandyMotorOnDurationMs = 3000, currentSpinPwmValue = 150,
             currentCandyCooldownS = 5, currentMinFaceAreaThreshold = 5000, currentEmotionConsensusWindow = 15, currentEmotionConsensusRequired = 10;
         var initialCandyDispensedThisStreak = false, leaderboardSnapshotBase64 = null;
+        var activeLeaderboardAttemptId = null, initialSmileScoreMs = 0;
+        var leaderboardSnapshotExpiresAtMs = 0, leaderboardImageExpiryTimer = null;
         var recentWinners = [], highScore = { img: defaultUserImg, timeMs: 0, location: "Customer Innovation Center" };
         var lastFrameTime = 0, frameCount = 0, calculatedFps = 0, fpsUpdateInterval = 1000, processingClick = false;
 
-        // CHANGE: Remove the 10-entry limit
-        const MAX_LEADERBOARD_DISPLAY = 100; // Or any higher number you want
+        const MAX_LEADERBOARD_DISPLAY = 100;
+
+        function clearPendingLeaderboardSnapshot() {
+            leaderboardSnapshotBase64 = null;
+            leaderboardSnapshotExpiresAtMs = 0;
+        }
+
+        function purgeExpiredLeaderboardImages() {
+            const now = Date.now();
+            if (leaderboardSnapshotExpiresAtMs <= now) clearPendingLeaderboardSnapshot();
+            recentWinners.forEach(winner => {
+                if (winner.imageExpiresAtMs <= now) {
+                    winner.img = defaultUserImg;
+                    winner.imageExpiresAtMs = 0;
+                }
+            });
+        }
+
+        function scheduleLeaderboardImageExpiry() {
+            clearTimeout(leaderboardImageExpiryTimer);
+            const deadlines = recentWinners.map(winner => winner.imageExpiresAtMs);
+            deadlines.push(leaderboardSnapshotExpiresAtMs);
+            const pendingDeadlines = deadlines.filter(deadline => deadline > Date.now());
+            leaderboardImageExpiryTimer = pendingDeadlines.length
+                ? setTimeout(updateLeaderboardUI, Math.max(1, Math.min(...pendingDeadlines) - Date.now()))
+                : null;
+        }
+
+        function updateManualDispenseButton() {
+            const cooldownRemainingMs = candyCooldownUntilMs - Date.now();
+            const unavailable = !playRequested || !isDemoRunning || demoStartupDeadlineMs > 0 || !ws || ws.readyState !== WebSocket.OPEN;
+            $("#btnDispenseCandy").prop('disabled', unavailable || manualDispensePending || cooldownRemainingMs > 0);
+            if (manualDispensePending) {
+                $("#manualDispenseStatus").text("Dispensing...");
+            } else if (!unavailable && cooldownRemainingMs > 0) {
+                $("#manualDispenseStatus").text(`Ready again in ${Math.ceil(cooldownRemainingMs / 1000)}s`);
+            } else if (unavailable || $("#manualDispenseStatus").text().startsWith("Ready again in ")) {
+                $("#manualDispenseStatus").text("");
+            }
+        }
 
         function updateEmotionIcon(emotion) {
             emotionIcon.removeClass("emotion-happy emotion-surprised emotion-neutral emotion-sad emotion-angry fas fa-smile fa-surprise fa-meh fa-frown fa-angry");
@@ -440,11 +506,13 @@
         }
 
         function updateLeaderboardUI() {
+            purgeExpiredLeaderboardImages();
+            recentWinners.sort((first, second) => second.timeMs - first.timeMs);
+            highScore = recentWinners[0] || { img: defaultUserImg, timeMs: 0, location: "Customer Innovation Center" };
             leaderboardEntriesEl.empty();
             if (recentWinners.length === 0) {
                 leaderboardEntriesEl.html('<div class="text-center text-muted py-3">Waiting for smilers... 😊</div>');
             } else {
-                // CHANGE: Display up to MAX_LEADERBOARD_DISPLAY entries
                 recentWinners.slice(0, MAX_LEADERBOARD_DISPLAY).forEach((winner, index) => {
                     const rankEmoji = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : `#${index + 1}`;
                     leaderboardEntriesEl.append(`<div class="leaderboard-entry ${winner.newRecord ? 'new-record-highlight' : ''}"><div class="leaderboard-rank">${rankEmoji}</div><img src="${winner.img || defaultUserImg}" class="leaderboard-img recent-winner-img"><div class="leaderboard-details"><span class="leaderboard-time">${winner.time}</span><span class="leaderboard-location">${winner.location}</span></div></div>`);
@@ -452,24 +520,34 @@
             }
             winnerImg.attr('src', highScore.img || defaultUserImg);
             winnerTimeDisplay.text((highScore.timeMs / 1000).toFixed(1) + 's');
+            scheduleLeaderboardImageExpiry();
         }
 
-        function recordFinalScore(snapshotForLeaderboard, initialSmileDurationRequirementMs, minigameBonusMs) {
+        function recordFinalScore(snapshotForLeaderboard, initialSmileDurationRequirementMs, minigameBonusMs, attemptId, imageExpiresAtMs) {
+            if (!attemptId || recentWinners.some(winner => winner.attemptId === attemptId)) return false;
+            if (![initialSmileDurationRequirementMs, minigameBonusMs].every(value => Number.isFinite(value) && value >= 0)) return false;
             const totalScoreMs = initialSmileDurationRequirementMs + minigameBonusMs;
-            const newEntry = { img: snapshotForLeaderboard ? `data:image/jpeg;base64,${snapshotForLeaderboard}` : defaultUserImg, time: (totalScoreMs / 1000).toFixed(1) + 's', location: "Customer Innovation Center", timeMs: totalScoreMs, newRecord: false };
-            if (!recentWinners.some(w => w.timeMs === totalScoreMs && w.img === newEntry.img)) {
-                recentWinners.push(newEntry);
-            }
-            // CHANGE: Sort but don't limit to 10
-            recentWinners.sort((a, b) => b.timeMs - a.timeMs);
-            if (totalScoreMs > highScore.timeMs) {
-                highScore = { ...highScore, img: newEntry.img, timeMs: totalScoreMs };
-                const newHighScoreEntry = recentWinners.find(w => w.timeMs === highScore.timeMs);
-                if (newHighScoreEntry) newHighScoreEntry.newRecord = true;
+            if (!Number.isFinite(totalScoreMs)) return false;
+            const hasUnexpiredPhoto = snapshotForLeaderboard && Number.isFinite(imageExpiresAtMs) && imageExpiresAtMs > Date.now();
+            const isNewRecord = totalScoreMs > highScore.timeMs;
+            if (isNewRecord) recentWinners.forEach(winner => { winner.newRecord = false; });
+            const newEntry = {
+                attemptId: attemptId,
+                img: hasUnexpiredPhoto ? `data:image/jpeg;base64,${snapshotForLeaderboard}` : defaultUserImg,
+                imageExpiresAtMs: hasUnexpiredPhoto ? imageExpiresAtMs : 0,
+                time: (totalScoreMs / 1000).toFixed(1) + 's',
+                location: "Customer Innovation Center", timeMs: totalScoreMs, newRecord: isNewRecord
+            };
+            recentWinners.push(newEntry);
+            if (isNewRecord) {
                 showCelebration();
             }
             updateLeaderboardUI();
+            return true;
         }
+
+        document.addEventListener("visibilitychange", updateLeaderboardUI);
+        window.addEventListener("focus", updateLeaderboardUI);
 
         function resetUIDisplayToIdle() {
             countdownDisplay.html("😊 Smile for candy!"); targetEmotionDisplay.html("🎯 Target: ---"); minigameScoreDisplay.html("⏱️ Bonus: +0.0s");
@@ -482,6 +560,7 @@
 
         function setDemoButtonState(isRunning) {
             isDemoRunning = isRunning;
+            updateManualDispenseButton();
             btnStartDemo.prop('disabled', false)
                 .toggleClass("btn-success", isRunning)
                 .toggleClass("btn-danger", false)
@@ -508,7 +587,8 @@
                 videoStatus.text("Status: Starting camera...");
                 setDemoButtonState(true);
                 btnStartDemo.prop('disabled', true);
-                leaderboardSnapshotBase64 = null;
+                clearPendingLeaderboardSnapshot();
+                activeLeaderboardAttemptId = null;
                 initialCandyDispensedThisStreak = false;
                 setTimeout(() => { processingClick = false; }, 500);
             }
@@ -536,9 +616,11 @@
 
         function handleDemoStoppedLocally() {
             console.log("JS: Forcing UI reset (handleDemoStoppedLocally).");
+            manualDispensePending = false;
             setDemoButtonState(false);
             resetUIDisplayToIdle();
-            leaderboardSnapshotBase64 = null;
+            clearPendingLeaderboardSnapshot();
+            activeLeaderboardAttemptId = null;
             initialCandyDispensedThisStreak = false;
         }
 
@@ -588,8 +670,23 @@
                         setDemoButtonState(msg.demo_active);
                     }
                     if (msg.ready) { demoStartupDeadlineMs = 0; }
+                    if (typeof msg.candy_eligible_again_time === "number") {
+                        candyCooldownUntilMs = Date.now() + Math.max(0, msg.candy_eligible_again_time - serverTimeMs);
+                    }
+                    updateManualDispenseButton();
 
-                    if (msg.new_snapshot_taken && msg.leaderboard_snapshot_b64) { leaderboardSnapshotBase64 = msg.leaderboard_snapshot_b64; }
+                    if (msg.leaderboard_attempt_id && msg.leaderboard_attempt_id !== activeLeaderboardAttemptId) {
+                        activeLeaderboardAttemptId = msg.leaderboard_attempt_id;
+                        initialSmileScoreMs = msg.initial_smile_score_ms;
+                        initialCandyDispensedThisStreak = true;
+                        if (msg.candy_was_dispensed_this_cycle) showCelebration();
+                        clearPendingLeaderboardSnapshot();
+                        if (msg.leaderboard_snapshot_b64 && msg.leaderboard_snapshot_expires_at_ms > serverTimeMs) {
+                            leaderboardSnapshotBase64 = msg.leaderboard_snapshot_b64;
+                            leaderboardSnapshotExpiresAtMs = Date.now() + msg.leaderboard_snapshot_expires_at_ms - serverTimeMs;
+                        }
+                        updateLeaderboardUI();
+                    }
                     if (msg.ready && msg.message && !isDemoRunning) { videoStatus.text("Status: " + msg.message); }
                     const currentDetectedEmotion = msg.current_detected_emotion ? msg.current_detected_emotion.toUpperCase() : "N/A";
                     emotionDisplay.text("Detected: " + currentDetectedEmotion); updateEmotionIcon(msg.current_detected_emotion);
@@ -632,14 +729,21 @@
                             let gameOverHtml = `<span class="text-danger">🏁 GAME OVER!</span> ${msg.game_over_reason || ''}`;
                             if (msg.game_over_reset_timer_s >= 0) gameOverHtml += ` Resetting: <span class="text-warning text-countdown-timer pulse">${msg.game_over_reset_timer_s.toFixed(1)}s</span>...`;
                             countdownDisplay.html(gameOverHtml);
-                            if (initialCandyDispensedThisStreak) { recordFinalScore(leaderboardSnapshotBase64, currentHappyDurationRequirementMs, msg.minigame_score_ms); }
-                            initialCandyDispensedThisStreak = false; leaderboardSnapshotBase64 = null;
+                            if (initialCandyDispensedThisStreak) {
+                                recordFinalScore(leaderboardSnapshotBase64, initialSmileScoreMs, msg.minigame_score_ms, activeLeaderboardAttemptId, leaderboardSnapshotExpiresAtMs);
+                            }
+                            initialCandyDispensedThisStreak = false; clearPendingLeaderboardSnapshot();
                             break;
                         case "IDLE":
                             resetUIDisplayToIdle();
-                            initialCandyDispensedThisStreak = false; leaderboardSnapshotBase64 = null;
+                            initialCandyDispensedThisStreak = false; clearPendingLeaderboardSnapshot(); activeLeaderboardAttemptId = null;
                             break;
                     }
+                } else if (msg.type === "dispense_result") {
+                    manualDispensePending = false;
+                    candyCooldownUntilMs = Date.now() + Math.max(0, msg.candy_eligible_again_time - serverTimeMs);
+                    $("#manualDispenseStatus").text(msg.message);
+                    updateManualDispenseButton();
                 } else if (msg.type === "demo_stopped") {
                     console.log("JS: Received 'demo_stopped' from server.");
                     demoStartupDeadlineMs = 0;
@@ -671,6 +775,14 @@
             };
             ws.onerror = function(err) { console.error('WS: Error:', err); videoStatus.text("Status: Connection error.").addClass("text-danger"); };
         }
+
+        $("#btnDispenseCandy").click(function() {
+            updateManualDispenseButton();
+            if ($(this).prop('disabled')) return;
+            manualDispensePending = true;
+            updateManualDispenseButton();
+            ws.send(JSON.stringify({ command: "dispense_candy" }));
+        });
 
         btnStartDemo.click(function() {
             if (processingClick || !ws || ws.readyState !== WebSocket.OPEN) return;
@@ -706,6 +818,7 @@
             minSmileTimeAboutEl.text((currentHappyDurationRequirementMs / 1000).toFixed(1));
             resetUIDisplayToIdle(); btnStartDemo.prop('disabled', true); btnSettings.prop('disabled', true);
             updateLeaderboardUI(); connectWebSocket();
+            setInterval(updateManualDispenseButton, 250);
 
             setInterval(() => {
                 const statusTimeoutMs = demoStartupDeadlineMs > 0 ? 20000 : 2000;

@@ -46,6 +46,10 @@ $(function () {
         clearTimeout(inactivityTimer);
         if (!splashEnabled) return;
         inactivityTimer = setTimeout(function () {
+            if (window.isDemoRunning) {
+                resetInactivityTimer();
+                return;
+            }
             if ($("#splashScreen").is(":hidden")) {
                 returnToLandingScreen();
             }

@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import sys
 import random
+import uuid
 from enum import Enum
 from collections import deque
 
@@ -126,11 +127,17 @@ demo_owner = None
 video_producer_task = None
 active_websockets = set()
 start_stop_lock = asyncio.Lock() # NEW: Lock to prevent race conditions on start/stop commands
+dispense_lock = asyncio.Lock()
 current_game_state = GameState.IDLE
 is_initial_happy_streak = False
 initial_happy_streak_start_time_ms = 0
 leaderboard_snapshot_b64 = None # Base64 encoded image for the leaderboard
 leaderboard_snapshot_taken_this_session = False # Flag if snapshot was taken for current attempt
+LEADERBOARD_IMAGE_RETENTION_S = 12 * 60 * 60
+leaderboard_snapshot_expires_at_ms = 0
+leaderboard_snapshot_expiry_handle = None
+leaderboard_attempt_id = None
+initial_smile_score_ms = 0
 candy_eligible_again_time_s = 0 # Timestamp when candy can be dispensed again
 dispenser_motor_should_stop_time_s = 0 # Timestamp for motor cycle completion calculation
 minigame_start_time_overall_ms = 0 # Start time of the entire minigame session
@@ -584,6 +591,26 @@ async def broadcast_frame(raw_jpeg_mv: memoryview):
             logger.error("Error sending frame: %s", e)
             active_websockets.discard(ws)
 
+def clear_leaderboard_snapshot():
+    global leaderboard_snapshot_b64, leaderboard_snapshot_expires_at_ms, leaderboard_snapshot_expiry_handle
+    leaderboard_snapshot_b64 = None
+    leaderboard_snapshot_expires_at_ms = 0
+    if leaderboard_snapshot_expiry_handle is not None:
+        leaderboard_snapshot_expiry_handle.cancel()
+        leaderboard_snapshot_expiry_handle = None
+
+
+def set_leaderboard_snapshot(snapshot_b64):
+    global leaderboard_snapshot_b64, leaderboard_snapshot_expires_at_ms, leaderboard_snapshot_expiry_handle
+    clear_leaderboard_snapshot()
+    if snapshot_b64:
+        leaderboard_snapshot_b64 = snapshot_b64
+        leaderboard_snapshot_expires_at_ms = (time.time() + LEADERBOARD_IMAGE_RETENTION_S) * 1000
+        leaderboard_snapshot_expiry_handle = asyncio.get_running_loop().call_later(
+            LEADERBOARD_IMAGE_RETENTION_S, clear_leaderboard_snapshot
+        )
+
+
 def reset_game_completely():
     global current_game_state, is_initial_happy_streak, initial_happy_streak_start_time_ms
     global leaderboard_snapshot_b64, leaderboard_snapshot_taken_this_session
@@ -591,13 +618,16 @@ def reset_game_completely():
     global current_target_emotion_set_time_ms, current_round_deadline_ms
     global current_hold_duration_ms, current_transition_ms, last_game_over_reason
     global game_over_display_start_time_s, emotion_history, stable_primary_emotion_name
+    global leaderboard_attempt_id, initial_smile_score_ms
 
     logger.info("Resetting game state to IDLE, clearing leaderboard snapshot and related flags.")
     current_game_state = GameState.IDLE
     is_initial_happy_streak = False
     initial_happy_streak_start_time_ms = 0
-    leaderboard_snapshot_b64 = None # Clear any existing snapshot
+    clear_leaderboard_snapshot()
     leaderboard_snapshot_taken_this_session = False
+    leaderboard_attempt_id = None
+    initial_smile_score_ms = 0
     minigame_start_time_overall_ms = 0
     minigame_current_score_ms = 0
     current_target_emotion = None
@@ -637,6 +667,7 @@ async def video_stream_producer_loop():
     global current_target_emotion, current_target_emotion_set_time_ms, current_round_deadline_ms
     global current_hold_duration_ms, current_transition_ms, last_game_over_reason, game_over_display_start_time_s
     global emotion_history, stable_primary_emotion_name, MOTOR_CONTROLLER
+    global leaderboard_attempt_id, initial_smile_score_ms
 
     cap = None # Initialize cap to None
     capture_worker = None
@@ -732,19 +763,17 @@ async def video_stream_producer_loop():
                     smile_duration_ms = current_time_ms - initial_happy_streak_start_time_ms
                     if not ui_in_candy_cooldown and smile_duration_ms >= app_settings["happy_time_ms"]:
                         if not leaderboard_snapshot_taken_this_session:
-                            if current_face_roi_for_snapshot_hwc_original_scale is not None:
-                                temp_b64 = frame_to_base64(current_face_roi_for_snapshot_hwc_original_scale)
-                                if temp_b64:
-                                    leaderboard_snapshot_b64 = temp_b64
-                                    snapshot_generated_this_frame = True
-
+                            qualified_smile_score_ms = app_settings["happy_time_ms"]
                             motor_activated_successfully = False
                             motor_activated_successfully = await activate_motor_for_active_game()
 
                             if motor_activated_successfully:
+                                leaderboard_attempt_id = uuid.uuid4().hex
+                                initial_smile_score_ms = qualified_smile_score_ms
+                                if current_face_roi_for_snapshot_hwc_original_scale is not None:
+                                    set_leaderboard_snapshot(frame_to_base64(current_face_roi_for_snapshot_hwc_original_scale))
+                                    snapshot_generated_this_frame = bool(leaderboard_snapshot_b64)
                                 candy_dispensed_this_server_cycle = True
-                                dispenser_motor_should_stop_time_s = current_time_s + (app_settings["motor_on_ms"] / 1000.0)
-                                candy_eligible_again_time_s = dispenser_motor_should_stop_time_s + app_settings["cooldown_s"]
                                 leaderboard_snapshot_taken_this_session = True
                                 current_game_state = GameState.MINIGAME_BUFFER_SMILE
                                 current_target_emotion = "happy"
@@ -809,6 +838,8 @@ async def video_stream_producer_loop():
                 "in_candy_cooldown": ui_in_candy_cooldown, "candy_eligible_again_time": candy_eligible_again_time_s * 1000,
                 "current_time_ms": current_time_ms, "initial_smile_streak_start_time_ms": (initial_happy_streak_start_time_ms if is_initial_happy_streak else 0),
                 "leaderboard_snapshot_b64": leaderboard_snapshot_b64, "new_snapshot_taken": snapshot_generated_this_frame,
+                "leaderboard_snapshot_expires_at_ms": leaderboard_snapshot_expires_at_ms,
+                "leaderboard_attempt_id": leaderboard_attempt_id, "initial_smile_score_ms": initial_smile_score_ms,
                 "candy_was_dispensed_this_cycle": candy_dispensed_this_server_cycle, "game_state": current_game_state.name,
                 "target_emotion": current_target_emotion, "round_deadline_ms": current_round_deadline_ms,
                 "minigame_score_ms": minigame_current_score_ms, "game_over_reason": last_game_over_reason if current_game_state == GameState.GAME_OVER else "",
@@ -879,15 +910,23 @@ def disarm_demo():
 
 
 async def activate_motor_for_active_game():
-    if not is_demo_active or demo_owner not in active_websockets or demo_owner.closed:
-        return False
-    if not MOTOR_CONTROLLER or not MOTOR_CONTROLLER.is_connected():
-        return False
-    try:
-        return await MOTOR_CONTROLLER.activate_motor()
-    except Exception:
-        logger.exception("Motor activation failed.")
-        return False
+    global candy_eligible_again_time_s, dispenser_motor_should_stop_time_s
+    async with dispense_lock:
+        if not is_demo_active or demo_owner not in active_websockets or demo_owner.closed:
+            return False
+        if time.time() < candy_eligible_again_time_s:
+            return False
+        if not MOTOR_CONTROLLER or not MOTOR_CONTROLLER.is_connected():
+            return False
+        try:
+            if not await MOTOR_CONTROLLER.activate_motor():
+                return False
+            dispenser_motor_should_stop_time_s = time.time() + (app_settings["motor_on_ms"] / 1000.0)
+            candy_eligible_again_time_s = dispenser_motor_should_stop_time_s + app_settings["cooldown_s"]
+            return True
+        except Exception:
+            logger.exception("Motor activation failed.")
+            return False
 
 
 async def stop_active_demo(only_if_no_clients=False):
@@ -972,6 +1011,18 @@ async def websocket_handler(request):
                         stopped = await stop_active_demo()
                         if not stopped:
                             await ws.send_json({"type": "info", "message": "Demo is not currently active."})
+
+                    elif cmd == "dispense_candy":
+                        success = False
+                        if ws is demo_owner:
+                            success = await activate_motor_for_active_game()
+                        await ws.send_json({
+                            "type": "dispense_result",
+                            "success": success,
+                            "current_time_ms": time.time() * 1000,
+                            "candy_eligible_again_time": candy_eligible_again_time_s * 1000,
+                            "message": "Candy dispensing!" if success else "Cannot dispense. Check that your demo is running, the motor is connected, and cooldown has finished.",
+                        })
 
                     elif cmd == "update_settings":
                         new_settings_payload = data.get("settings", {})
