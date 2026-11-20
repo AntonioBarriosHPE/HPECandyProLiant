@@ -583,9 +583,10 @@ async def broadcast_frame(raw_jpeg_mv: memoryview):
             continue
         # ---------------------------------------------------------
 
+        # Let CancelledError propagate: it means the demo is stopping, not that this client failed.
         try:
             await ws.send_bytes(jpeg_bytes)
-        except (ConnectionResetError, asyncio.CancelledError):
+        except ConnectionResetError:
             active_websockets.discard(ws)
         except Exception as e:
             logger.error("Error sending frame: %s", e)
