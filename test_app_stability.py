@@ -412,6 +412,23 @@ class AsyncStabilityTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual(cleanup_results, ["opened resource"])
 
+    async def test_stop_during_frame_send_cancels_demo_and_keeps_client(self):
+        send_started = asyncio.Event()
+
+        async def blocked_send(_):
+            send_started.set()
+            await asyncio.Event().wait()
+
+        client = Mock(closed=False, _req=Mock(transport=None), send_bytes=blocked_send)
+        with patch.object(app, "active_websockets", {client}):
+            task = asyncio.create_task(app.broadcast_frame(memoryview(b"jpeg")))
+            await asyncio.wait_for(send_started.wait(), timeout=1)
+            task.cancel()
+
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertIn(client, app.active_websockets)
+
     async def test_stop_cancels_active_demo_task(self):
         async def demo_task():
             await asyncio.Event().wait()
